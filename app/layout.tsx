@@ -28,6 +28,18 @@ export const metadata: Metadata = {
   title: "EnerGo Planet — Georgia's Energy Future",
   description:
     "An isometric strategy game teaching young Georgians about renewable energy, regional geopolitics, and the real challenges their country faces in the energy sector.",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "EnerGo Planet",
+  },
+  other: {
+    // Android Chrome PWA install
+    "mobile-web-app-capable": "yes",
+    // Prevent iOS from linkifying phone numbers
+    "format-detection": "telephone=no",
+  },
 };
 
 export const viewport: Viewport = {

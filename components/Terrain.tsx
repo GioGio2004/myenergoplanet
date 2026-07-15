@@ -40,7 +40,9 @@ function Tile({
     const c = scene.clone(true);
     c.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) {
-        o.castShadow = true;
+        // Tiles only need to receive shadows, not cast them.
+        // Casting shadows from 12 tiles × 4 sub-meshes = ~48 shadow draw calls
+        // per frame is what was triggering WebGL context loss on integrated GPUs.
         o.receiveShadow = true;
       }
     });

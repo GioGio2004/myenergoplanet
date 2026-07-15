@@ -167,24 +167,18 @@ export function Hero({ obstacles = [], mobileDirRef, ...props }: HeroProps) {
     if (keys.current.a || keys.current.ArrowLeft) inputDir.x -= 1;
     if (keys.current.d || keys.current.ArrowRight) inputDir.x += 1;
 
-    let mobileMagnitude = 0;
     if (mobileDirRef?.current) {
       inputDir.x += mobileDirRef.current.x;
       inputDir.z += mobileDirRef.current.z;
-      mobileMagnitude = Math.hypot(
-        mobileDirRef.current.x,
-        mobileDirRef.current.z,
-      );
     }
 
     const inputMagnitude = Math.min(inputDir.length(), 1.0);
     if (inputMagnitude > 0) inputDir.normalize();
 
     // 2. Momentum Processing
-    // FIX: sprinting now requires an explicit sprint signal (Shift key, or a
-    // mobile joystick pushed near its outer edge) instead of firing just
-    // because diagonal keyboard input naturally has magnitude ~1.
-    const isSprintInput = keys.current.Shift || mobileMagnitude > 0.9;
+    // Sprint is KEYBOARD-ONLY (Shift key). The mobile joystick always walks
+    // at normal pace regardless of how far the knob is pushed.
+    const isSprintInput = keys.current.Shift;
     const targetSpeed =
       inputMagnitude > 0
         ? (isSprintInput ? RUN_SPEED : WALK_SPEED) * inputMagnitude

@@ -6,7 +6,9 @@ export default function manifest(): MetadataRoute.Manifest {
     short_name: "EnerGo Planet",
     description:
       "An isometric strategy game teaching young Georgians about renewable energy and the real energy challenges facing their country.",
+    // start_url stays at "/" — the middleware rewrites it to /en transparently
     start_url: "/",
+    scope: "/",
     display: "standalone",
     // Lock mobile devices to landscape on install — no screen rotation needed
     orientation: "landscape",
@@ -18,6 +20,13 @@ export default function manifest(): MetadataRoute.Manifest {
         src: "/favicon.ico",
         sizes: "any",
         type: "image/x-icon",
+        purpose: "any",
+      },
+      {
+        src: "/favicon.ico",
+        sizes: "any",
+        type: "image/x-icon",
+        purpose: "maskable",
       },
     ],
   };

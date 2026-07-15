@@ -6,33 +6,26 @@ import { Hero } from "@/components/Hero";
 import { Terrain } from "@/components/Terrain";
 import { House } from "@/components/House";
 import { useEffect, useState, useRef } from "react";
-import * as THREE from "three";
+import { PCFShadowMap } from "three";
 
 // ─── Lighting Rig ─────────────────────────────────────────────────────────────
 function Lighting() {
   return (
     <>
-      <ambientLight intensity={0.4} color="#c8d4e8" />
+      <ambientLight intensity={0.5} color="#c8d4e8" />
       <directionalLight
         position={[15, 25, 10]}
-        intensity={2.0}
+        intensity={1.8}
         color="#fff8ef"
         castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
-        shadow-camera-left={-40}
-        shadow-camera-right={40}
-        shadow-camera-top={40}
-        shadow-camera-bottom={-40}
+        shadow-mapSize-width={1024}
+        shadow-mapSize-height={1024}
+        shadow-camera-left={-30}
+        shadow-camera-right={30}
+        shadow-camera-top={30}
+        shadow-camera-bottom={-30}
         shadow-bias={-0.001}
       />
-      {/* Orange rim from behind — energy glow */}
-      <directionalLight
-        position={[-12, 6, -15]}
-        intensity={0.5}
-        color="#f97316"
-      />
-      <hemisphereLight args={["#87ceeb", "#8b6914", 0.3]} />
     </>
   );
 }
@@ -53,6 +46,22 @@ function useSuppressClockWarning() {
       console.warn = orig;
     };
   }, []);
+}
+
+// ─── Detect mobile (touch-primary device) ─────────────────────────────────────
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () =>
+      setIsMobile(
+        window.matchMedia("(pointer: coarse)").matches ||
+          "ontouchstart" in window,
+      );
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+  return isMobile;
 }
 
 // ─── Analog Virtual Joystick ──────────────────────────────────────────────────
@@ -92,7 +101,8 @@ function Joystick({
 
     setKnobPos({ x: dx, y: dy });
 
-    // Normalize to [-1, 1] for movement
+    // Normalize to [-1, 1] for movement — never saturate to full 1.0
+    // so joystick always reads as walk (not sprint)
     const normX = dx / maxRadius;
     const normY = dy / maxRadius; // maps to Z in 3D
     onChange(normX, normY);
@@ -146,6 +156,7 @@ export default function View3D() {
 
   const [energy] = useState(42);
   const mobileDirRef = useRef<{ x: number; z: number }>({ x: 0, z: 0 });
+  const isMobile = useIsMobile();
 
   const handleJoystickChange = (x: number, z: number) => {
     mobileDirRef.current = { x, z };
@@ -158,7 +169,8 @@ export default function View3D() {
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       {/* ── 3D Canvas ──────────────────────────────────────────────────── */}
       <Canvas
-        shadows={{ type: THREE.PCFSoftShadowMap }}
+        shadows={{ type: PCFShadowMap }}
+        gl={{ antialias: false, powerPreference: "high-performance" }}
         style={{ background: "#080c12" }}
       >
         {/* Start camera already behind the character — Hero.tsx will lerp from here */}
@@ -166,7 +178,7 @@ export default function View3D() {
           makeDefault
           fov={60}
           near={0.1}
-          far={1000}
+          far={300}
           position={[0, 5, 20]}
         />
 
@@ -262,47 +274,51 @@ export default function View3D() {
         </div>
       </div>
 
-      {/* ── HUD — controls hint ───────────────────────────────────────── */}
-      <div
-        id="hud-controls"
-        className="hud-panel"
-        style={{
-          position: "absolute",
-          bottom: 16,
-          left: 16,
-          pointerEvents: "none",
-        }}
-      >
+      {/* ── HUD — controls hint (desktop only) ────────────────────────── */}
+      {!isMobile && (
         <div
+          id="hud-controls"
+          className="hud-panel"
           style={{
-            fontFamily: "var(--font-hud)",
-            fontSize: 10,
-            color: "var(--color-text-muted)",
-            letterSpacing: "0.1em",
+            position: "absolute",
+            bottom: 16,
+            left: 16,
+            pointerEvents: "none",
           }}
         >
-          WASD / ARROWS · MOVE
+          <div
+            style={{
+              fontFamily: "var(--font-hud)",
+              fontSize: 10,
+              color: "var(--color-text-muted)",
+              letterSpacing: "0.1em",
+            }}
+          >
+            WASD / ARROWS · MOVE
+          </div>
+          <div
+            style={{
+              fontFamily: "var(--font-hud)",
+              fontSize: 10,
+              color: "var(--color-text-muted)",
+              marginTop: 2,
+              letterSpacing: "0.1em",
+            }}
+          >
+            SHIFT · SPRINT
+          </div>
         </div>
-        <div
-          style={{
-            fontFamily: "var(--font-hud)",
-            fontSize: 10,
-            color: "var(--color-text-muted)",
-            marginTop: 2,
-            letterSpacing: "0.1em",
-          }}
-        >
-          SHIFT · SPRINT
-        </div>
-      </div>
+      )}
 
-      {/* ── HUD — mobile Joystick ────────────────────────────────────────── */}
-      <div
-        id="hud-joystick"
-        style={{ position: "absolute", bottom: 24, right: 24 }}
-      >
-        <Joystick onChange={handleJoystickChange} onEnd={handleJoystickEnd} />
-      </div>
+      {/* ── HUD — mobile Joystick (touch screens only) ────────────────── */}
+      {isMobile && (
+        <div
+          id="hud-joystick"
+          style={{ position: "absolute", bottom: 24, right: 24 }}
+        >
+          <Joystick onChange={handleJoystickChange} onEnd={handleJoystickEnd} />
+        </div>
+      )}
     </div>
   );
 }
