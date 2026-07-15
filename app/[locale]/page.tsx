@@ -9,7 +9,7 @@ const View3D = dynamic(() => import("@/components/View3D"), {
 
 export default function Home() {
   return (
-    <main className="w-screen h-screen overflow-hidden bg-gray-900">
+    <main style={{ width: "100vw", height: "100vh", overflow: "hidden", backgroundColor: "#080c12" }}>
       <View3D />
     </main>
   );
