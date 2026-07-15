@@ -5,7 +5,7 @@ import { PerspectiveCamera } from "@react-three/drei";
 import { Hero } from "@/components/Hero";
 import { Terrain } from "@/components/Terrain";
 import { House } from "@/components/House";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, Suspense } from "react";
 import { PCFShadowMap } from "three";
 
 // ─── Lighting Rig ─────────────────────────────────────────────────────────────
@@ -183,14 +183,16 @@ export default function View3D() {
         />
 
         <Lighting />
-        <Terrain />
-        <House position={[-8, 0, -8]} rotation={[0, Math.PI / 4, 0]} />
+        <Suspense fallback={null}>
+          <Terrain />
+          <House position={[-8, 0, -8]} rotation={[0, Math.PI / 4, 0]} />
 
-        {/* Character Controller — Spawn outside the gate at Z=12 */}
-        <Hero
-          position={[0, 0, 12]}
-          mobileDirRef={mobileDirRef}
-        />
+          {/* Character Controller — Spawn outside the gate at Z=12 */}
+          <Hero
+            position={[0, 0, 12]}
+            mobileDirRef={mobileDirRef}
+          />
+        </Suspense>
       </Canvas>
 
       {/* ── HUD — title badge ─────────────────────────────────────────── */}
