@@ -64,6 +64,31 @@ function useIsMobile() {
   return isMobile;
 }
 
+// ─── Detect landscape orientation on mobile ───────────────────────────────────
+// Returns true only when a coarse-pointer (touch) device is held horizontally.
+// We combine pointer-coarse with an orientation/aspect check so it doesn't
+// fire on wide desktop monitors.
+function useIsLandscapeMobile() {
+  const [isLandscapeMobile, setIsLandscapeMobile] = useState(false);
+  useEffect(() => {
+    const check = () => {
+      const isTouch =
+        window.matchMedia("(pointer: coarse)").matches ||
+        "ontouchstart" in window;
+      const isLandscape = window.innerWidth > window.innerHeight;
+      setIsLandscapeMobile(isTouch && isLandscape);
+    };
+    check();
+    window.addEventListener("resize", check);
+    window.addEventListener("orientationchange", check);
+    return () => {
+      window.removeEventListener("resize", check);
+      window.removeEventListener("orientationchange", check);
+    };
+  }, []);
+  return isLandscapeMobile;
+}
+
 // ─── Analog Virtual Joystick ──────────────────────────────────────────────────
 function Joystick({
   onChange,
@@ -157,6 +182,12 @@ export default function View3D() {
   const [energy] = useState(42);
   const mobileDirRef = useRef<{ x: number; z: number }>({ x: 0, z: 0 });
   const isMobile = useIsMobile();
+  const isLandscapeMobile = useIsLandscapeMobile();
+
+  // Narrow FOV on mobile landscape so the character fills ~2× more screen.
+  // tan(30°)/tan(17°) ≈ 1.9 — nearly double the apparent size.
+  // Portrait mobile and desktop keep the standard 60° wide-angle feel.
+  const cameraFov = isLandscapeMobile ? 34 : 60;
 
   const handleJoystickChange = (x: number, z: number) => {
     mobileDirRef.current = { x, z };
@@ -176,7 +207,7 @@ export default function View3D() {
         {/* Start camera already behind the character — Hero.tsx will lerp from here */}
         <PerspectiveCamera
           makeDefault
-          fov={60}
+          fov={cameraFov}
           near={0.1}
           far={300}
           position={[0, 5, 20]}
