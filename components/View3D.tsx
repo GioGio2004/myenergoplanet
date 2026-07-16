@@ -176,8 +176,45 @@ function Joystick({
 }
 
 // ─── Main View ───────────────────────────────────────────────────────────────
-export default function View3D({ gyroEnabled = false }: { gyroEnabled?: boolean }) {
+export default function View3D({
+  gyroEnabled = false,
+  gameStarted = false,
+}: {
+  gyroEnabled?: boolean;
+  gameStarted?: boolean;
+}) {
   useSuppressClockWarning();
+
+  // ── Background Music ───────────────────────────────────────────────────────
+  // Start looping bg music the moment the user taps "TAP TO START".
+  // Browsers block autoplay until a user gesture fires — gameStarted becoming
+  // true is always triggered by a click, so this is safe on iOS/Android.
+  const bgMusicRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (!gameStarted) return; // wait for user gesture
+
+    const audio = new Audio("/gameassets/game-sounds/bgguitarmusic.mp3");
+    audio.loop = true;
+    audio.volume = 0.3;
+    bgMusicRef.current = audio;
+    audio.play().catch(() => {
+      // Fallback: if play was still blocked, retry on next user interaction
+      const retry = () => {
+        audio.play().catch(() => {});
+        window.removeEventListener("pointerdown", retry);
+        window.removeEventListener("keydown", retry);
+      };
+      window.addEventListener("pointerdown", retry, { once: true });
+      window.addEventListener("keydown", retry, { once: true });
+    });
+
+    return () => {
+      audio.pause();
+      audio.src = "";
+      bgMusicRef.current = null;
+    };
+  }, [gameStarted]);
 
   const [energy] = useState(42);
   const mobileDirRef = useRef<{ x: number; z: number }>({ x: 0, z: 0 });

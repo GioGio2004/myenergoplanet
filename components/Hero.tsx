@@ -89,6 +89,23 @@ export function Hero({ obstacles = [], mobileDirRef, gyroEnabled = false, ...pro
   const lockedCameraAngleRef = useRef(0);
   const wasMovingRef = useRef(false);
 
+  // ── Walk Sound ─────────────────────────────────────────────────────────────
+  const walkSoundRef = useRef<HTMLAudioElement | null>(null);
+  const walkSoundPlayingRef = useRef(false);
+
+  useEffect(() => {
+    const audio = new Audio("/gameassets/game-sounds/walk.wav");
+    audio.loop = true;
+    audio.volume = 0.55;
+    walkSoundRef.current = audio;
+    return () => {
+      audio.pause();
+      audio.src = "";
+      walkSoundRef.current = null;
+      walkSoundPlayingRef.current = false;
+    };
+  }, []);
+
   // Manual camera orbit (drag to look around)
   const isDraggingRef = useRef(false);
   const lastPointerXRef = useRef(0);
@@ -251,6 +268,17 @@ export function Hero({ obstacles = [], mobileDirRef, gyroEnabled = false, ...pro
       momentumRate * delta,
     );
     const isPhysicallyMoving = currentSpeedRef.current > 0.1;
+
+    // ── Walk Sound Trigger ─────────────────────────────────────────────────
+    // Start/stop the looping footstep sound in sync with physical movement.
+    if (isPhysicallyMoving && !walkSoundPlayingRef.current) {
+      walkSoundRef.current?.play().catch(() => {});
+      walkSoundPlayingRef.current = true;
+    } else if (!isPhysicallyMoving && walkSoundPlayingRef.current) {
+      walkSoundRef.current?.pause();
+      walkSoundRef.current && (walkSoundRef.current.currentTime = 0);
+      walkSoundPlayingRef.current = false;
+    }
 
     // 3. Camera-Relative Character Rotation
     if (inputMagnitude > 0) {

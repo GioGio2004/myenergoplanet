@@ -191,7 +191,7 @@ export default function Home() {
       }}
     >
       {/* 3D world is always mounted so assets preload behind the start screen */}
-      <View3D gyroEnabled={gyroEnabled} />
+      <View3D gyroEnabled={gyroEnabled} gameStarted={gameStarted} />
 
       {/* Overlay fades away once the user taps start */}
       {!gameStarted && <StartScreen onStart={handleStart} />}
