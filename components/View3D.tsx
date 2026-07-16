@@ -176,7 +176,7 @@ function Joystick({
 }
 
 // ─── Main View ───────────────────────────────────────────────────────────────
-export default function View3D() {
+export default function View3D({ gyroEnabled = false }: { gyroEnabled?: boolean }) {
   useSuppressClockWarning();
 
   const [energy] = useState(42);
@@ -197,7 +197,17 @@ export default function View3D() {
   };
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+    <div
+      style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        // Extend the canvas into the safe-area zone so the background colour
+        // fills the home-indicator / nav-bar gap instead of leaving a black bar.
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
+        boxSizing: "border-box",
+      }}
+    >
       {/* ── 3D Canvas ──────────────────────────────────────────────────── */}
       <Canvas
         shadows={{ type: PCFShadowMap }}
@@ -222,6 +232,7 @@ export default function View3D() {
           <Hero
             position={[0, 0, 12]}
             mobileDirRef={mobileDirRef}
+            gyroEnabled={gyroEnabled}
           />
         </Suspense>
       </Canvas>
@@ -314,7 +325,7 @@ export default function View3D() {
           className="hud-panel"
           style={{
             position: "absolute",
-            bottom: 16,
+            bottom: "max(16px, calc(16px + env(safe-area-inset-bottom, 0px)))",
             left: 16,
             pointerEvents: "none",
           }}
@@ -347,7 +358,11 @@ export default function View3D() {
       {isMobile && (
         <div
           id="hud-joystick"
-          style={{ position: "absolute", bottom: 24, right: 24 }}
+          style={{
+            position: "absolute",
+            bottom: "max(24px, calc(24px + env(safe-area-inset-bottom, 0px)))",
+            right: "max(24px, calc(24px + env(safe-area-inset-right, 0px)))",
+          }}
         >
           <Joystick onChange={handleJoystickChange} onEnd={handleJoystickEnd} />
         </div>
