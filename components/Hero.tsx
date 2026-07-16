@@ -94,9 +94,12 @@ export function Hero({ obstacles = [], mobileDirRef, gyroEnabled = false, ...pro
   const lastPointerXRef = useRef(0);
   const manualOrbitRef = useRef(0); // accumulates user drag input, blended into cameraAngleRef
 
-  // Gyroscope parallax — stores normalized pitch/roll from DeviceOrientation.
-  // Values range from -1.0 to +1.0 (clamped at ±30° of physical tilt).
-  const gyroRef = useRef({ pitch: 0, roll: 0 });
+  // Gyroscope — raw + smoothed values.
+  // rawGyro holds the unfiltered DeviceOrientation data.
+  // smoothGyro is a low-pass filtered version used for camera orbit.
+  // Values are in RADIANS representing additional camera orbit offset.
+  const rawGyroRef  = useRef({ yaw: 0, pitch: 0 });
+  const smoothGyroRef = useRef({ yaw: 0, pitch: 0 });
 
   const WALK_SPEED = 5.0;
   const RUN_SPEED = 9.5;
@@ -134,22 +137,53 @@ export function Hero({ obstacles = [], mobileDirRef, gyroEnabled = false, ...pro
   // ── Gyroscope Listener ──────────────────────────────────────────
   // Only registered after the user has granted sensor permission on the
   // start screen. Has no effect on desktop (events simply never fire).
+  //
+  // We track the DELTA from a calibration baseline so the player doesn't
+  // need to hold the phone at a precise angle.
+  const gyroBaseRef = useRef<{ beta: number; gamma: number } | null>(null);
+
   useEffect(() => {
     if (!gyroEnabled) return;
 
-    const handleOrientation = (e: DeviceOrientationEvent) => {
-      const CLAMP = 30; // degrees of tilt that map to ±1.0
-      const beta = e.beta ?? 0;   // front-to-back tilt (↑ pitch)
-      const gamma = e.gamma ?? 0; // left-to-right tilt (→ roll)
+    // Reset baseline whenever gyro is (re-)enabled
+    gyroBaseRef.current = null;
 
-      gyroRef.current = {
-        pitch: Math.max(-1, Math.min(1, beta  / CLAMP)),
-        roll:  Math.max(-1, Math.min(1, gamma / CLAMP)),
+    const handleOrientation = (e: DeviceOrientationEvent) => {
+      const beta  = e.beta  ?? 0; // front-to-back tilt  (-180…180)
+      const gamma = e.gamma ?? 0; // left-to-right tilt  (-90…90)
+
+      // Capture baseline on first event so the current hold angle = zero
+      if (!gyroBaseRef.current) {
+        gyroBaseRef.current = { beta, gamma };
+        return;
+      }
+
+      // Delta from neutral hold position
+      const dBeta  = beta  - gyroBaseRef.current.beta;
+      const dGamma = gamma - gyroBaseRef.current.gamma;
+
+      // SENSITIVITY: ±15° of tilt maps to ±MAX_ORBIT_RAD of camera orbit.
+      // Smaller clamp angle = higher sensitivity (less tilt needed).
+      const CLAMP_DEG   = 15;                     // how many ° = full deflection
+      const MAX_ORBIT_RAD = Math.PI * 0.35;       // ±63° camera orbit at full tilt
+
+      const normYaw   = Math.max(-1, Math.min(1, dGamma / CLAMP_DEG));
+      const normPitch = Math.max(-1, Math.min(1, dBeta  / CLAMP_DEG));
+
+      rawGyroRef.current = {
+        yaw:   normYaw   * MAX_ORBIT_RAD,
+        pitch: normPitch * MAX_ORBIT_RAD,
       };
     };
 
     window.addEventListener("deviceorientation", handleOrientation);
-    return () => window.removeEventListener("deviceorientation", handleOrientation);
+    return () => {
+      window.removeEventListener("deviceorientation", handleOrientation);
+      // Reset so next enable starts fresh
+      gyroBaseRef.current = null;
+      rawGyroRef.current  = { yaw: 0, pitch: 0 };
+      smoothGyroRef.current = { yaw: 0, pitch: 0 };
+    };
   }, [gyroEnabled]);
 
   // ── Manual Camera Orbit (drag) ────────────────────────────────────────────
@@ -320,17 +354,50 @@ export function Hero({ obstacles = [], mobileDirRef, gyroEnabled = false, ...pro
         ),
       );
 
-    // ── 8. Gyroscope Parallax ───────────────────────────────────────────
-    // Nudge the orbit target by the physical tilt of the device so the
-    // camera subtly glides around the character as the user tilts their phone.
-    // Intensity = 1.5 world-units at maximum tilt (±30°).
+    // ── 8. Gyroscope Smooth Orbit ───────────────────────────────────────
+    // Apply a low-pass filter to the raw gyro signal each frame.
+    // SMOOTH_FACTOR controls responsiveness:
+    //   • close to 1.0 → instant / jittery (raw signal)
+    //   • close to 0.0 → very sluggish / over-smoothed
+    // 8–12 × delta at 60 fps gives a ~130 ms settling time — game-like feel.
     if (gyroEnabled) {
-      const PARALLAX = 1.5;
-      targetCamPos.x += gyroRef.current.roll  * PARALLAX;
-      targetCamPos.y += gyroRef.current.pitch * PARALLAX;
+      const SMOOTH = Math.min(1, 10.0 * delta);
+      smoothGyroRef.current.yaw = THREE.MathUtils.lerp(
+        smoothGyroRef.current.yaw,
+        rawGyroRef.current.yaw,
+        SMOOTH,
+      );
+      smoothGyroRef.current.pitch = THREE.MathUtils.lerp(
+        smoothGyroRef.current.pitch,
+        rawGyroRef.current.pitch,
+        SMOOTH,
+      );
     }
 
-    state.camera.position.lerp(targetCamPos, 4.0 * delta);
+    // Build the final camera position:
+    //  • Start from the base orbit angle (drag / auto-follow)
+    //  • Add the smoothed gyro yaw to rotate left/right around the character
+    //  • Add the smoothed gyro pitch to adjust camera height/elevation
+    const gyroYaw   = gyroEnabled ? smoothGyroRef.current.yaw   : 0;
+    const gyroPitch = gyroEnabled ? smoothGyroRef.current.pitch : 0;
+
+    const finalCamAngle = cameraAngleRef.current + gyroYaw;
+    // Clamp vertical pitch so camera never clips underground or flips over
+    const PITCH_MIN = -0.3; // radians (look slightly down)
+    const PITCH_MAX =  0.6; // radians (look up)
+    const verticalOffset = 3.0 + THREE.MathUtils.clamp(gyroPitch, PITCH_MIN, PITCH_MAX) * armLengthRef.current * 0.5;
+
+    const finalCamPos = group.current.position
+      .clone()
+      .add(
+        new THREE.Vector3(
+          -Math.sin(finalCamAngle) * armLengthRef.current,
+          verticalOffset,
+          -Math.cos(finalCamAngle) * armLengthRef.current,
+        ),
+      );
+
+    state.camera.position.lerp(finalCamPos, 5.0 * delta);
     state.camera.lookAt(
       group.current.position.clone().add(new THREE.Vector3(0, 1.2, 0)),
     );
