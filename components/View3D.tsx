@@ -4,7 +4,6 @@ import { Canvas } from "@react-three/fiber";
 import { PerspectiveCamera } from "@react-three/drei";
 import { Hero } from "@/components/Hero";
 import { Terrain } from "@/components/Terrain";
-import { House } from "@/components/House";
 import { useEffect, useState, useRef, Suspense } from "react";
 import { PCFShadowMap } from "three";
 
@@ -256,18 +255,17 @@ export default function View3D({
           makeDefault
           fov={cameraFov}
           near={0.1}
-          far={300}
+          far={500}
           position={[0, 5, 20]}
         />
 
         <Lighting />
         <Suspense fallback={null}>
           <Terrain />
-          <House position={[-8, 0, -8]} rotation={[0, Math.PI / 4, 0]} />
 
-          {/* Character Controller — Spawn outside the gate at Z=12 */}
+          {/* Character — spawns on the island surface */}
           <Hero
-            position={[0, 0, 12]}
+            position={[0, 0, 0]}
             mobileDirRef={mobileDirRef}
             gyroEnabled={gyroEnabled}
           />
