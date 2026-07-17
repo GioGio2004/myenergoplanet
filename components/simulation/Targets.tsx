@@ -30,6 +30,7 @@ function Target({ id, x, z, ry }: { id: string; x: number; z: number; ry: number
   const dead = useRef(false);
   const respawnAt = useRef(0);
   const flashUntil = useRef(0);
+  const flashing = useRef(false);
 
   // One shared material per target so the hit-flash tints board + head. It is
   // created and attached in an effect (never during render) and mutated only
@@ -77,11 +78,13 @@ function Target({ id, x, z, ry }: { id: string; x: number; z: number; ry: number
   useFrame((_, dt) => {
     const now = performance.now();
 
-    // Hit flash (emissive pulse)
+    // Hit flash (emissive pulse) — only touch the material on state change
     const mat = matRef.current;
-    if (mat) {
-      mat.emissive.set(now < flashUntil.current ? "#f97316" : "#000000");
-      mat.emissiveIntensity = now < flashUntil.current ? 1.4 : 0;
+    const isFlashing = now < flashUntil.current;
+    if (mat && isFlashing !== flashing.current) {
+      flashing.current = isFlashing;
+      mat.emissive.set(isFlashing ? "#f97316" : "#000000");
+      mat.emissiveIntensity = isFlashing ? 1.4 : 0;
     }
 
     // Topple / respawn

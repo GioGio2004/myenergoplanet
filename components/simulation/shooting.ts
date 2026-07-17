@@ -8,16 +8,22 @@ import * as THREE from "three";
 // scene — so tracers/flashes/the character itself can't swallow bullets.
 
 const hitables = new Set<THREE.Object3D>();
+// Cached snapshot — rebuilt only when the set changes, so the per-shot hot
+// path never allocates.
+let hitablesArr: THREE.Object3D[] | null = null;
 
 export function registerHitable(obj: THREE.Object3D): () => void {
   hitables.add(obj);
+  hitablesArr = null;
   return () => {
     hitables.delete(obj);
+    hitablesArr = null;
   };
 }
 
 export function getHitables(): THREE.Object3D[] {
-  return Array.from(hitables);
+  if (!hitablesArr) hitablesArr = Array.from(hitables);
+  return hitablesArr;
 }
 
 // ── Damage routing ───────────────────────────────────────────────────────────

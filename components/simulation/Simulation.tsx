@@ -189,7 +189,9 @@ export default function Simulation() {
       onContextMenu={(e) => e.preventDefault()}
     >
       <Canvas
-        shadows={{ type: PCFSoftShadowMap }}
+        // Mobile GPUs choke on PCFSoft + big shadow maps — drop to plain PCF
+        // and a quarter-size map on touch; desktop keeps the soft look.
+        shadows={isTouch ? true : { type: PCFSoftShadowMap }}
         dpr={isTouch ? [1, 1.5] : [1, 2]}
         gl={{ antialias: !isTouch, powerPreference: "high-performance" }}
         camera={{ fov: 55, near: 0.1, far: 300, position: [0, 2.2, -4] }}
@@ -204,8 +206,8 @@ export default function Simulation() {
           intensity={1.6}
           color="#fff2df"
           castShadow
-          shadow-mapSize-width={2048}
-          shadow-mapSize-height={2048}
+          shadow-mapSize-width={isTouch ? 1024 : 2048}
+          shadow-mapSize-height={isTouch ? 1024 : 2048}
           shadow-camera-left={-35}
           shadow-camera-right={35}
           shadow-camera-top={35}

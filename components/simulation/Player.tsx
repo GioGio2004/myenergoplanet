@@ -34,7 +34,6 @@ import {
   ADS_DIST,
   ADS_FOV,
   ADS_SPEED_MULT,
-  SOUND_URLS,
   JUMP_VELOCITY,
   GRAVITY,
 } from "@/components/simulation/anims";
@@ -43,6 +42,7 @@ import { getHitables, damageTarget } from "@/components/simulation/shooting";
 import { fx } from "@/components/simulation/effects";
 import { simStore } from "@/components/simulation/store";
 import { simInput } from "@/components/simulation/input";
+import { initSounds, playSound } from "@/components/simulation/sound";
 
 // Preload so the character is ready as soon as the route opens.
 useFBX.preload(CHARACTER_URL);
@@ -50,6 +50,21 @@ Object.values(CLIP_URLS).forEach((u) => useFBX.preload(u));
 useGLTF.preload(GUN_URL);
 
 const BASE_FOV = 55;
+
+// Module-level scratch objects: the frame loop and shoot() run up to 60×/s and
+// 8×/s respectively — reusing these keeps the hot paths allocation-free (per-
+// frame garbage was a big source of GC hitches on mobile).
+const V2_CENTER = new THREE.Vector2(0, 0);
+const HIT_BUF: THREE.Intersection[] = [];
+const SHOT_END = new THREE.Vector3();
+const SHOT_MUZZLE = new THREE.Vector3();
+const TMP_DIR = new THREE.Vector3();
+const TMP_EULER = new THREE.Euler();
+const TMP_FWD = new THREE.Vector3();
+const TMP_RIGHT = new THREE.Vector3();
+const TMP_PIVOT = new THREE.Vector3();
+const TMP_CAM = new THREE.Vector3();
+const TMP_LOOK = new THREE.Vector3();
 
 // ─── Player: character + TPS controller + rifle + hitscan shooting ───────────
 export function Player({ locked }: { locked: React.RefObject<boolean> }) {
@@ -173,29 +188,9 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
   const vy = useRef(0); // vertical velocity (jump/gravity)
   const grounded = useRef(true);
 
-  // ── Sounds (pooled so rapid shots overlap) ───────────────────────────────
-  const sounds = useRef<{ shot: HTMLAudioElement[]; shotIdx: number; reload: HTMLAudioElement | null; hit: HTMLAudioElement | null }>({
-    shot: [],
-    shotIdx: 0,
-    reload: null,
-    hit: null,
-  });
+  // ── Sounds (WebAudio — decoded once, mixed off the main thread) ──────────
   useEffect(() => {
-    const s = sounds.current;
-    s.shot = Array.from({ length: 4 }, () => {
-      const a = new Audio(SOUND_URLS.shot);
-      a.volume = 0.35;
-      return a;
-    });
-    s.reload = new Audio(SOUND_URLS.reload);
-    s.reload.volume = 0.6;
-    s.hit = new Audio(SOUND_URLS.hit);
-    s.hit.volume = 0.55;
-    return () => {
-      s.shot = [];
-      s.reload = null;
-      s.hit = null;
-    };
+    initSounds();
   }, []);
 
   // ── Reload ────────────────────────────────────────────────────────────────
@@ -207,11 +202,7 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
     const durationMs = ((clip?.duration ?? 1.5) / 1.15) * 1000; // slight speed-up
     reloadingUntil.current = now + durationMs;
     simStore.set({ reloading: true });
-    const snd = sounds.current.reload;
-    if (snd) {
-      snd.currentTime = 0;
-      snd.play().catch(() => {});
-    }
+    playSound("reload", 0.6);
   };
 
   // ── Keyboard (e.code — layout-independent) ───────────────────────────────
@@ -276,7 +267,8 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
 
   // ── One shot: raycast from the crosshair, theatre from the muzzle ────────
   // (Raycaster lives in a ref: the React compiler forbids mutating memoised
-  // values from event/frame callbacks, but ref contents are fair game.)
+  // values from event/frame callbacks, but ref contents are fair game.
+  // All vectors are module-level scratch — the hot path allocates nothing.)
   const raycasterRef = useRef<THREE.Raycaster | null>(null);
   const shoot = () => {
     ammo.current -= 1;
@@ -286,16 +278,17 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
     const raycaster = raycasterRef.current;
 
     // Where the crosshair points (camera centre), limited range.
-    raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+    raycaster.setFromCamera(V2_CENTER, camera);
     raycaster.far = RANGE;
-    const hits = raycaster.intersectObjects(getHitables(), false);
-    const hit = hits[0] ?? null;
-    const end =
-      hit?.point ??
-      raycaster.ray.origin.clone().addScaledVector(raycaster.ray.direction, RANGE);
+    HIT_BUF.length = 0;
+    raycaster.intersectObjects(getHitables(), false, HIT_BUF);
+    const hit = HIT_BUF[0] ?? null;
+    const end = hit
+      ? SHOT_END.copy(hit.point)
+      : SHOT_END.copy(raycaster.ray.origin).addScaledVector(raycaster.ray.direction, RANGE);
 
     // Muzzle world position (falls back to camera if the gun isn't mounted).
-    const muzzle = new THREE.Vector3(...MUZZLE_LOCAL);
+    const muzzle = SHOT_MUZZLE.set(...MUZZLE_LOCAL);
     if (gunRef.current) gunRef.current.children[0]?.localToWorld(muzzle);
     else muzzle.copy(raycaster.ray.origin);
 
@@ -308,23 +301,14 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
     if (targetId && hit) {
       damageTarget(targetId, 1, hit.point);
       simStore.set({ hitAt: performance.now() });
-      const snd = sounds.current.hit;
-      if (snd) {
-        snd.currentTime = 0;
-        snd.play().catch(() => {});
-      }
+      playSound("hit", 0.55);
     }
 
     // Recoil: kick the camera up a touch with slight horizontal jitter.
     pitch.current = Math.min(PITCH_MAX, pitch.current + RECOIL_PITCH);
     yaw.current += (Math.random() - 0.5) * 0.003;
 
-    const pool = sounds.current;
-    const a = pool.shot[pool.shotIdx++ % pool.shot.length];
-    if (a) {
-      a.currentTime = 0;
-      a.play().catch(() => {});
-    }
+    playSound("shot", 0.35);
   };
 
   // ── Game loop ─────────────────────────────────────────────────────────────
@@ -396,9 +380,9 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
     // 3. Move with collide-and-slide; ADS walks slower.
     const wantAds = ads.current || simInput.ads;
     if (moving && locked.current) {
-      const dir = new THREE.Vector3(lx, 0, lz)
+      const dir = TMP_DIR.set(lx, 0, lz)
         .normalize()
-        .applyEuler(new THREE.Euler(0, yaw.current, 0));
+        .applyEuler(TMP_EULER.set(0, yaw.current, 0));
       const sprint = keys.current.shift && lz > 0 && !wantAds ? SPRINT_MULT : 1;
       let speed = lz > 0 ? RUN_SPEED * sprint : lz < 0 ? BACK_SPEED : STRAFE_SPEED;
       if (wantAds) speed *= ADS_SPEED_MULT;
@@ -459,23 +443,22 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
       cam.updateProjectionMatrix();
     }
 
-    const fwd = new THREE.Vector3(Math.sin(yaw.current), 0, Math.cos(yaw.current));
-    const right = new THREE.Vector3(-Math.cos(yaw.current), 0, Math.sin(yaw.current));
-    const pivot = g.position.clone().add(new THREE.Vector3(0, CAM_HEIGHT, 0));
+    const fwd = TMP_FWD.set(Math.sin(yaw.current), 0, Math.cos(yaw.current));
+    const right = TMP_RIGHT.set(-Math.cos(yaw.current), 0, Math.sin(yaw.current));
+    const pivot = TMP_PIVOT.copy(g.position);
+    pivot.y += CAM_HEIGHT;
 
-    const camPos = pivot
-      .clone()
+    const camPos = TMP_CAM.copy(pivot)
       .addScaledVector(fwd, -dist * Math.cos(pitch.current))
-      .addScaledVector(right, CAM_SHOULDER)
-      .add(new THREE.Vector3(0, -dist * Math.sin(pitch.current) * 0.9 + 0.15, 0));
+      .addScaledVector(right, CAM_SHOULDER);
+    camPos.y += -dist * Math.sin(pitch.current) * 0.9 + 0.15;
     camPos.y = Math.max(camPos.y, 0.25);
 
     camera.position.lerp(camPos, Math.min(1, 18 * dt));
-    const lookTarget = pivot
-      .clone()
+    const lookTarget = TMP_LOOK.copy(pivot)
       .addScaledVector(fwd, 3)
-      .add(new THREE.Vector3(0, Math.sin(pitch.current) * 3, 0))
       .addScaledVector(right, CAM_SHOULDER);
+    lookTarget.y += Math.sin(pitch.current) * 3;
     camera.lookAt(lookTarget);
   });
 
