@@ -97,13 +97,20 @@ function ActionButton({
   active = false,
   onDown,
   onUp,
+  onDrag,
 }: {
   label: string;
   size?: number;
   active?: boolean;
   onDown: () => void;
   onUp?: () => void;
+  // PUBG-style: while the button is held, finger movement is reported as
+  // drag deltas (used by FIRE to steer aim while shooting).
+  onDrag?: (dx: number, dy: number) => void;
 }) {
+  const pid = useRef<number | null>(null);
+  const last = useRef({ x: 0, y: 0 });
+
   return (
     <div
       style={{
@@ -126,15 +133,25 @@ function ActionButton({
       }}
       onPointerDown={(e) => {
         e.stopPropagation();
+        pid.current = e.pointerId;
+        last.current = { x: e.clientX, y: e.clientY };
         (e.target as HTMLElement).setPointerCapture(e.pointerId);
         onDown();
       }}
+      onPointerMove={(e) => {
+        if (!onDrag || pid.current !== e.pointerId) return;
+        e.stopPropagation();
+        onDrag(e.clientX - last.current.x, e.clientY - last.current.y);
+        last.current = { x: e.clientX, y: e.clientY };
+      }}
       onPointerUp={(e) => {
         e.stopPropagation();
+        pid.current = null;
         onUp?.();
       }}
       onPointerCancel={(e) => {
         e.stopPropagation();
+        pid.current = null;
         onUp?.();
       }}
     >
@@ -239,6 +256,12 @@ export function TouchControls() {
             onUp={() => {
               setFiringOn(false);
               simInput.firing = false;
+            }}
+            // Dragging on the held FIRE button steers the aim (PUBG-style):
+            // deltas feed the same look channel as the right-half surface.
+            onDrag={(dx, dy) => {
+              simInput.lookDX += dx;
+              simInput.lookDY += dy;
             }}
           />
         </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import Link from "next/link";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { PCFSoftShadowMap } from "three";
 import { Arena } from "@/components/simulation/Arena";
@@ -224,9 +225,37 @@ export default function Simulation() {
       </Canvas>
 
       {/* ── HUD ─────────────────────────────────────────────────────────── */}
+      {/* Back to lobby — stops propagation so tapping it never starts the game */}
+      <Link
+        href="/"
+        aria-label="Back to lobby"
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="hud-panel"
+        style={{
+          position: "absolute",
+          top: 16,
+          left: 16,
+          width: 40,
+          height: 40,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "var(--font-hud)",
+          fontSize: 20,
+          fontWeight: 700,
+          color: "var(--color-accent)",
+          textDecoration: "none",
+          cursor: "pointer",
+          zIndex: 10,
+        }}
+      >
+        ←
+      </Link>
+
       <div
         className="hud-panel"
-        style={{ position: "absolute", top: 16, left: 16, pointerEvents: "none" }}
+        style={{ position: "absolute", top: 16, left: 68, pointerEvents: "none" }}
       >
         <div
           style={{
