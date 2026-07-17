@@ -7,6 +7,9 @@ import Link from "next/link";
 // crashes with "cannot read _gsap". One build = one instance.
 import { gsap } from "gsap/dist/gsap";
 import { ScrollTrigger } from "gsap/dist/ScrollTrigger";
+import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 
 // ─── EnerGo landing — game lobby ─────────────────────────────────────────────
 // Minimal type-driven page (noth.in-inspired): huge headline, marquee, list of
@@ -18,17 +21,17 @@ const GAMES = [
     id: "01",
     title: "ENERGO PLANET",
     tag: "Third-person island explorer",
-    desc: "Walk a floating island as the cyber courier. WASD or joystick, gyro camera on mobile.",
-    href: "/energoplanet",
+    desc: "The island is being rebuilt — the cyber courier returns soon.",
+    href: null,
     img: "/landing/energoplanet.jpg",
-    live: true,
+    live: false,
   },
   {
     id: "02",
-    title: "TRAINING GROUND",
-    tag: "TPS combat simulation",
-    desc: "SCAR-H in hand: run, aim, jump and drop the targets. Full touch controls on phones.",
-    href: "/game-simulation",
+    title: "BLACKOUT",
+    tag: "PvP arena shooter",
+    desc: "SCAR-H in hand: fight your friends until their lights go out. Full touch controls on phones.",
+    href: "/lobby",
     img: "/landing/training-ground.jpg",
     live: true,
   },
@@ -44,6 +47,25 @@ const GAMES = [
 ] as const;
 
 const MARQUEE = "PLAY · LEARN · BUILD · ENERGY · GEORGIA · ";
+
+// Signed-in chip fed by CONVEX (not Clerk) — proves the full auth round-trip:
+// Clerk JWT → Convex identity → users row. Also ensures the row exists (in
+// case the Clerk webhook isn't configured) and beats presence every 30 s.
+function ProfileChip() {
+  const profile = useQuery(api.users.current);
+  const ensure = useMutation(api.users.ensureUser);
+  const beat = useMutation(api.users.heartbeat);
+  useEffect(() => {
+    ensure().catch(() => {});
+    const t = setInterval(() => {
+      beat().catch(() => {});
+    }, 30000);
+    return () => clearInterval(t);
+  }, [ensure, beat]);
+  if (!profile || profile.externalId === "demo_guest") return null;
+  const handle = "username" in profile && profile.username ? profile.username : profile.name;
+  return <span className="profile-chip">@{handle}</span>;
+}
 
 export default function Landing() {
   const root = useRef<HTMLDivElement>(null);
@@ -169,6 +191,18 @@ export default function Landing() {
         </div>
         <div className="nav-item nav-right">
           <span className="dot" /> GEORGIA · {new Date().getFullYear()}
+          <Show when="signed-out">
+            <SignInButton mode="modal">
+              <button className="nav-auth-btn">SIGN IN</button>
+            </SignInButton>
+            <SignUpButton mode="modal">
+              <button className="nav-auth-btn nav-auth-btn-solid">SIGN UP</button>
+            </SignUpButton>
+          </Show>
+          <Show when="signed-in">
+            <ProfileChip />
+            <UserButton />
+          </Show>
         </div>
       </nav>
 
@@ -322,6 +356,11 @@ const CSS = `
 .logo { font-weight: 800; letter-spacing: 0.06em; font-size: 17px; color: var(--g-900); }
 .logo span { color: var(--g-500); }
 .nav-right { display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.22em; color: var(--g-700); }
+.nav-auth-btn { margin-left: 10px; padding: 8px 14px; font: inherit; font-size: 11px; letter-spacing: 0.22em; color: var(--g-700); background: transparent; border: 1px solid var(--g-700); border-radius: 999px; cursor: pointer; transition: color 0.2s, background 0.2s; }
+.nav-auth-btn:hover { color: #fff; border-color: #fff; }
+.nav-auth-btn-solid { color: #0a0f0a; background: var(--g-700); }
+.profile-chip { margin: 0 10px; padding: 7px 12px; font-size: 11px; letter-spacing: 0.16em; color: var(--g-900); background: var(--g-100); border: 1px solid var(--g-300); border-radius: 999px; font-weight: 700; }
+.nav-auth-btn-solid:hover { color: #0a0f0a; background: #fff; border-color: #fff; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--g-500); box-shadow: 0 0 0 4px rgba(63,145,95,0.18); }
 
 /* hero */

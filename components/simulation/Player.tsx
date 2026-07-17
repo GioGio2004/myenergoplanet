@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useFBX, useAnimations, useGLTF } from "@react-three/drei";
+import { SkeletonUtils } from "three-stdlib";
 import * as THREE from "three";
 import {
   CHARACTER_URL,
@@ -23,9 +24,6 @@ import {
   PITCH_MIN,
   PITCH_MAX,
   GUN_URL,
-  GUN_SCALE,
-  GUN_POS,
-  GUN_ROT,
   MUZZLE_LOCAL,
   MAG_SIZE,
   FIRE_INTERVAL,
@@ -34,6 +32,7 @@ import {
   ADS_DIST,
   ADS_FOV,
   ADS_SPEED_MULT,
+  SOUND_URLS,
   JUMP_VELOCITY,
   GRAVITY,
 } from "@/components/simulation/anims";
@@ -42,7 +41,9 @@ import { getHitables, damageTarget } from "@/components/simulation/shooting";
 import { fx } from "@/components/simulation/effects";
 import { simStore } from "@/components/simulation/store";
 import { simInput } from "@/components/simulation/input";
-import { initSounds, playSound } from "@/components/simulation/sound";
+import { mountGunToHand, applySkinTint, tintGun } from "@/components/simulation/gunmount";
+import { skinById, gunById } from "@/components/simulation/skins";
+import { isJoined, me, myId, myName, netEvents } from "@/components/simulation/net";
 
 // Preload so the character is ready as soon as the route opens.
 useFBX.preload(CHARACTER_URL);
@@ -50,29 +51,55 @@ Object.values(CLIP_URLS).forEach((u) => useFBX.preload(u));
 useGLTF.preload(GUN_URL);
 
 const BASE_FOV = 55;
+const PVP_DAMAGE = 10; // 100 HP → 10 body shots to kill
+const REGEN_DELAY_MS = 4000; // untouched for this long → start healing
+const REGEN_PER_S = 12; // HP per second while regenerating
+const RESPAWN_MS = 3000;
+const INVULN_MS = 2000;
+const BROADCAST_MS = 80;
 
-// Module-level scratch objects: the frame loop and shoot() run up to 60×/s and
-// 8×/s respectively — reusing these keeps the hot paths allocation-free (per-
-// frame garbage was a big source of GC hitches on mobile).
-const V2_CENTER = new THREE.Vector2(0, 0);
-const HIT_BUF: THREE.Intersection[] = [];
-const SHOT_END = new THREE.Vector3();
-const SHOT_MUZZLE = new THREE.Vector3();
-const TMP_DIR = new THREE.Vector3();
-const TMP_EULER = new THREE.Euler();
-const TMP_FWD = new THREE.Vector3();
-const TMP_RIGHT = new THREE.Vector3();
-const TMP_PIVOT = new THREE.Vector3();
-const TMP_CAM = new THREE.Vector3();
-const TMP_LOOK = new THREE.Vector3();
+// 1v1 duel: fixed opposing corners — host gets [0], guest gets [1]. Both
+// players return to their own corner at match start and after every death.
+const DUEL_SPAWNS: [number, number][] = [
+  [-18, -18],
+  [18, 18],
+];
 
-// ─── Player: character + TPS controller + rifle + hitscan shooting ───────────
-export function Player({ locked }: { locked: React.RefObject<boolean> }) {
+const SPAWNS: [number, number][] = [
+  [0, 0],
+  [18, 18],
+  [-18, 18],
+  [18, -18],
+  [-18, -18],
+  [0, 20],
+  [20, 0],
+  [-20, 0],
+];
+
+interface PlayerProps {
+  locked: React.RefObject<boolean>;
+  online?: boolean;
+  skinId?: string;
+  gunId?: string;
+  /** 1v1 duel spawn corner (0 = host, 1 = guest). Undefined = free-for-all. */
+  duelSpawn?: number;
+}
+
+// ─── Player: character + TPS controller + rifle + hitscan + networking ───────
+export function Player({
+  locked,
+  online = false,
+  skinId = "volt",
+  gunId = "desert",
+  duelSpawn,
+}: PlayerProps) {
   const { gl, camera } = useThree();
 
   // ── Load body + motion + weapon ──────────────────────────────────────────
-  const character = useFBX(CHARACTER_URL);
+  const characterSrc = useFBX(CHARACTER_URL);
   const gun = useGLTF(GUN_URL);
+  // Own skeleton instance — the FBX cache is shared with every RemotePlayer.
+  const character = useMemo(() => SkeletonUtils.clone(characterSrc), [characterSrc]);
 
   const idleFbx = useFBX(CLIP_URLS.idle);
   const runFFbx = useFBX(CLIP_URLS["run-forward"]);
@@ -110,6 +137,7 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
     return out;
   }, [idleFbx, runFFbx, runBFbx, strLFbx, strRFbx, fireFbx, fireMFbx, reloadFbx, jumpFbx, runJumpFbx]);
 
+  // Shadows, culling, skin tint
   useEffect(() => {
     character.traverse((o) => {
       const m = o as THREE.Mesh;
@@ -119,57 +147,29 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
         m.frustumCulled = false;
       }
     });
-  }, [character]);
+    applySkinTint(character, skinById(skinId).tint);
+  }, [character, skinId]);
 
-  // ── Mount the rifle on the right-hand bone ───────────────────────────────
-  // The gun has no skeleton: parenting it to the hand bone means every clip
-  // (run, fire, reload) carries it automatically. Offsets are in bone-local
-  // centimetres — tuned constants live in anims.ts.
+  // ── Rifle on the right-hand bone (shared mount helper) ───────────────────
   const gunRef = useRef<THREE.Group | null>(null);
   useEffect(() => {
-    let handBone: THREE.Object3D | null = null;
-    character.traverse((o) => {
-      // FBXLoader may or may not keep the "mixamorig:" prefix — match loosely.
-      if (!handBone && (o as THREE.Bone).isBone && o.name.includes("RightHand") &&
-          !o.name.includes("Thumb") && !o.name.includes("Index") &&
-          !o.name.includes("Middle") && !o.name.includes("Ring") && !o.name.includes("Pinky")) {
-        handBone = o;
-      }
-    });
-    if (!handBone) return;
-
-    const holder = new THREE.Group();
-    holder.name = "gun-holder";
-    const gunScene = gun.scene.clone(true);
-    gunScene.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (m.isMesh) {
-        m.castShadow = true;
-        m.frustumCulled = false;
-      }
-    });
-    holder.add(gunScene);
-    holder.position.set(...GUN_POS);
-    holder.rotation.set(...GUN_ROT);
-    holder.scale.setScalar(GUN_SCALE);
-    (handBone as THREE.Object3D).add(holder);
+    const holder = mountGunToHand(character, gun.scene);
+    if (holder) tintGun(holder, gunById(gunId).tint);
     gunRef.current = holder;
-
     return () => {
-      (handBone as THREE.Object3D)?.remove(holder);
+      holder?.parent?.remove(holder);
       gunRef.current = null;
     };
-  }, [character, gun]);
+  }, [character, gun, gunId]);
 
   const group = useRef<THREE.Group>(null);
+  const body = useRef<THREE.Group>(null); // rotates when we die
   const { actions } = useAnimations(clips, group);
   const actionsRef = useRef(actions);
   useEffect(() => {
     actionsRef.current = actions;
   }, [actions]);
 
-  // Camera handle in a ref — the frame loop assigns .fov, and the React
-  // compiler only permits mutation through refs, not render-scope values.
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   useEffect(() => {
     cameraRef.current = camera as THREE.PerspectiveCamera;
@@ -185,24 +185,118 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
   const ammo = useRef(MAG_SIZE);
   const lastShot = useRef(0);
   const reloadingUntil = useRef(0);
-  const vy = useRef(0); // vertical velocity (jump/gravity)
+  const vy = useRef(0);
   const grounded = useRef(true);
+  // multiplayer
+  const hp = useRef(100);
+  const deadUntil = useRef(0);
+  const invulnUntil = useRef(0);
+  const lastBroadcast = useRef(0);
+  const lastHitAt = useRef(0); // last time we TOOK damage (drives regen delay)
+  const roundResetAt = useRef(0); // duel: when to snap back to my corner
 
-  // ── Sounds (WebAudio — decoded once, mixed off the main thread) ──────────
+  // ── Sounds ───────────────────────────────────────────────────────────────
+  const sounds = useRef<{ shot: HTMLAudioElement[]; shotIdx: number; reload: HTMLAudioElement | null; hit: HTMLAudioElement | null }>({
+    shot: [],
+    shotIdx: 0,
+    reload: null,
+    hit: null,
+  });
   useEffect(() => {
-    initSounds();
+    const s = sounds.current;
+    s.shot = Array.from({ length: 4 }, () => {
+      const a = new Audio(SOUND_URLS.shot);
+      a.volume = 0.35;
+      return a;
+    });
+    s.reload = new Audio(SOUND_URLS.reload);
+    s.reload.volume = 0.6;
+    s.hit = new Audio(SOUND_URLS.hit);
+    s.hit.volume = 0.55;
+    return () => {
+      s.shot = [];
+      s.reload = null;
+      s.hit = null;
+    };
   }, []);
 
-  // ── Reload ────────────────────────────────────────────────────────────────
+  // ── Duel: start in my own corner, facing the arena centre ────────────────
+  useEffect(() => {
+    if (duelSpawn === undefined) return;
+    const g = group.current;
+    if (!g) return;
+    const [sx, sz] = DUEL_SPAWNS[duelSpawn % DUEL_SPAWNS.length];
+    g.position.set(sx, 0, sz);
+    yaw.current = Math.atan2(-sx, -sz);
+    g.rotation.y = yaw.current;
+  }, [duelSpawn]);
+
+  // ── Network event handlers (online only) ─────────────────────────────────
+  useEffect(() => {
+    if (!online || !isJoined()) return;
+
+    // Remote players' tracers/impacts appear on our screen
+    netEvents.registerShotFx((m) => {
+      const from = new THREE.Vector3(...m.f);
+      const to = new THREE.Vector3(...m.t);
+      fx.muzzleFlash(from);
+      fx.tracer(from, to);
+      fx.impact(to);
+    });
+
+    // Victim-authoritative damage: only apply what targets ME
+    netEvents.registerDamage((m) => {
+      if (m.t !== myId()) return;
+      const now = performance.now();
+      if (now < deadUntil.current || now < invulnUntil.current) return;
+      lastHitAt.current = now;
+      hp.current = Math.max(0, hp.current - m.d);
+      simStore.set({ hp: Math.round(hp.current), damagedAt: now });
+      if (hp.current <= 0) {
+        // die
+        deadUntil.current = now + RESPAWN_MS;
+        simStore.set({ dead: true });
+        const p = me();
+        if (p) {
+          const deaths = ((p.getState("deaths") as number) ?? 0) + 1;
+          p.setState("deaths", deaths, true);
+        }
+        netEvents.died({ v: myId(), vn: myName(), k: m.k, kn: m.kn });
+      }
+    });
+
+    // Kill feed for everyone; the killer bumps their own score
+    netEvents.registerDied((m) => {
+      simStore.pushFeed(`${m.kn}  ▸  ${m.vn}`);
+      if (m.k === myId()) {
+        const p = me();
+        if (p) {
+          const kills = ((p.getState("kills") as number) ?? 0) + 1;
+          p.setState("kills", kills, true);
+        }
+      }
+      // Duel: ANY death ends the round — both players reset to their corners
+      // after the respawn delay (the victim's own respawn handles the rest).
+      if (duelSpawn !== undefined) {
+        roundResetAt.current = performance.now() + RESPAWN_MS;
+      }
+    });
+  }, [online, duelSpawn]);
+
+  // ── Reload ───────────────────────────────────────────────────────────────
   const tryReload = () => {
     const now = performance.now();
-    if (now < reloadingUntil.current) return; // already reloading
+    if (now < reloadingUntil.current) return;
     if (ammo.current >= MAG_SIZE) return;
     const clip = actionsRef.current.reload?.getClip();
-    const durationMs = ((clip?.duration ?? 1.5) / 1.15) * 1000; // slight speed-up
+    const durationMs = ((clip?.duration ?? 1.5) / 1.15) * 1000;
     reloadingUntil.current = now + durationMs;
     simStore.set({ reloading: true });
-    playSound("reload", 0.6);
+    const snd = sounds.current.reload;
+    if (snd) {
+      snd.currentTime = 0;
+      snd.play().catch(() => {});
+    }
   };
 
   // ── Keyboard (e.code — layout-independent) ───────────────────────────────
@@ -217,7 +311,7 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
     const down = (e: KeyboardEvent) => {
       set(e.code, true);
       if (e.code === "KeyR") tryReload();
-      if (e.code === "Space" && grounded.current) {
+      if (e.code === "Space" && grounded.current && performance.now() >= deadUntil.current) {
         vy.current = JUMP_VELOCITY;
         grounded.current = false;
       }
@@ -265,10 +359,7 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
     };
   }, [gl]);
 
-  // ── One shot: raycast from the crosshair, theatre from the muzzle ────────
-  // (Raycaster lives in a ref: the React compiler forbids mutating memoised
-  // values from event/frame callbacks, but ref contents are fair game.
-  // All vectors are module-level scratch — the hot path allocates nothing.)
+  // ── One shot ─────────────────────────────────────────────────────────────
   const raycasterRef = useRef<THREE.Raycaster | null>(null);
   const shoot = () => {
     ammo.current -= 1;
@@ -276,19 +367,15 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
 
     if (!raycasterRef.current) raycasterRef.current = new THREE.Raycaster();
     const raycaster = raycasterRef.current;
-
-    // Where the crosshair points (camera centre), limited range.
-    raycaster.setFromCamera(V2_CENTER, camera);
+    raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
     raycaster.far = RANGE;
-    HIT_BUF.length = 0;
-    raycaster.intersectObjects(getHitables(), false, HIT_BUF);
-    const hit = HIT_BUF[0] ?? null;
-    const end = hit
-      ? SHOT_END.copy(hit.point)
-      : SHOT_END.copy(raycaster.ray.origin).addScaledVector(raycaster.ray.direction, RANGE);
+    const hits = raycaster.intersectObjects(getHitables(), false);
+    const hit = hits[0] ?? null;
+    const end =
+      hit?.point ??
+      raycaster.ray.origin.clone().addScaledVector(raycaster.ray.direction, RANGE);
 
-    // Muzzle world position (falls back to camera if the gun isn't mounted).
-    const muzzle = SHOT_MUZZLE.set(...MUZZLE_LOCAL);
+    const muzzle = new THREE.Vector3(...MUZZLE_LOCAL);
     if (gunRef.current) gunRef.current.children[0]?.localToWorld(muzzle);
     else muzzle.copy(raycaster.ray.origin);
 
@@ -296,53 +383,101 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
     fx.tracer(muzzle, end);
     if (hit) fx.impact(hit.point);
 
-    // Damage + hitmarker
+    // Broadcast the theatre to friends
+    if (online && isJoined()) {
+      netEvents.shotFx({ f: [muzzle.x, muzzle.y, muzzle.z], t: [end.x, end.y, end.z] });
+    }
+
+    // Damage: shooting-range targets AND other players
     const targetId = hit?.object?.userData?.targetId as string | undefined;
+    const playerId = hit?.object?.userData?.playerId as string | undefined;
     if (targetId && hit) {
       damageTarget(targetId, 1, hit.point);
       simStore.set({ hitAt: performance.now() });
-      playSound("hit", 0.55);
+      const snd = sounds.current.hit;
+      if (snd) {
+        snd.currentTime = 0;
+        snd.play().catch(() => {});
+      }
+    } else if (playerId && hit && online && isJoined()) {
+      netEvents.damage({ t: playerId, d: PVP_DAMAGE, k: myId(), kn: myName() });
+      simStore.set({ hitAt: performance.now() });
+      const snd = sounds.current.hit;
+      if (snd) {
+        snd.currentTime = 0;
+        snd.play().catch(() => {});
+      }
     }
 
-    // Recoil: kick the camera up a touch with slight horizontal jitter.
     pitch.current = Math.min(PITCH_MAX, pitch.current + RECOIL_PITCH);
     yaw.current += (Math.random() - 0.5) * 0.003;
 
-    playSound("shot", 0.35);
+    const pool = sounds.current;
+    const a = pool.shot[pool.shotIdx++ % pool.shot.length];
+    if (a) {
+      a.currentTime = 0;
+      a.play().catch(() => {});
+    }
   };
 
-  // ── Game loop ─────────────────────────────────────────────────────────────
+  // ── Game loop ────────────────────────────────────────────────────────────
   useFrame((_, dt) => {
     const g = group.current;
     if (!g) return;
     const now = performance.now();
     const reloading = now < reloadingUntil.current;
+    const dead = now < deadUntil.current;
 
-    // ── Touch input (mobile): consume accumulated look deltas + queued actions
-    if (simInput.lookDX !== 0 || simInput.lookDY !== 0) {
-      const TOUCH_SENS = 0.0042;
-      yaw.current -= simInput.lookDX * TOUCH_SENS;
-      pitch.current = THREE.MathUtils.clamp(
-        pitch.current - simInput.lookDY * TOUCH_SENS,
-        PITCH_MIN,
-        PITCH_MAX,
-      );
-      simInput.lookDX = 0;
-      simInput.lookDY = 0;
+    // Finished dying → respawn. Duel mode: always back to MY corner, facing
+    // the centre; free-for-all: a random spawn point.
+    if (!dead && simStore.get().dead) {
+      const spawn =
+        duelSpawn !== undefined
+          ? DUEL_SPAWNS[duelSpawn % DUEL_SPAWNS.length]
+          : SPAWNS[Math.floor(Math.random() * SPAWNS.length)];
+      g.position.set(spawn[0], 0, spawn[1]);
+      if (duelSpawn !== undefined) {
+        yaw.current = Math.atan2(-spawn[0], -spawn[1]);
+        g.rotation.y = yaw.current;
+      }
+      hp.current = 100;
+      ammo.current = MAG_SIZE;
+      reloadingUntil.current = 0;
+      invulnUntil.current = now + INVULN_MS;
+      simStore.set({ dead: false, hp: 100, ammo: MAG_SIZE, reloading: false });
     }
-    if (simInput.jumpQueued) {
-      simInput.jumpQueued = false;
-      if (grounded.current) {
-        vy.current = JUMP_VELOCITY;
-        grounded.current = false;
+
+    // Duel round reset: a kill happened — the SURVIVOR also snaps back to
+    // their corner with full HP/ammo so every round starts fresh and fair.
+    if (roundResetAt.current > 0 && now >= roundResetAt.current) {
+      roundResetAt.current = 0;
+      if (!dead && duelSpawn !== undefined) {
+        const [sx, sz] = DUEL_SPAWNS[duelSpawn % DUEL_SPAWNS.length];
+        g.position.set(sx, 0, sz);
+        yaw.current = Math.atan2(-sx, -sz);
+        g.rotation.y = yaw.current;
+        hp.current = 100;
+        ammo.current = MAG_SIZE;
+        reloadingUntil.current = 0;
+        invulnUntil.current = now + INVULN_MS;
+        simStore.set({ hp: 100, ammo: MAG_SIZE, reloading: false });
       }
     }
-    if (simInput.reloadQueued) {
-      simInput.reloadQueued = false;
-      tryReload();
+
+    // Passive regen: untouched for a while → heal back to full.
+    if (online && !dead && hp.current < 100 && now - lastHitAt.current > REGEN_DELAY_MS) {
+      hp.current = Math.min(100, hp.current + REGEN_PER_S * dt);
+      const rounded = Math.round(hp.current);
+      if (rounded !== simStore.get().hp) simStore.set({ hp: rounded });
     }
 
-    // Reload finished this frame?
+    // Death pose on the body wrapper
+    const b = body.current;
+    if (b) {
+      const target = dead ? -Math.PI / 2 : 0;
+      b.rotation.x = THREE.MathUtils.lerp(b.rotation.x, target, Math.min(1, 8 * dt));
+    }
+
     if (!reloading && simStore.get().reloading) {
       ammo.current = MAG_SIZE;
       simStore.set({ reloading: false, ammo: MAG_SIZE });
@@ -365,24 +500,47 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
       current.current = name;
     };
 
-    // 1. Input direction (character-local; +Z forward, screen-right = −X).
-    //    Keyboard and the mobile joystick are merged; joystick is analogue.
-    const lx = (keys.current.a ? 1 : 0) + (keys.current.d ? -1 : 0) + simInput.moveX;
-    const lz = (keys.current.w ? 1 : 0) + (keys.current.s ? -1 : 0) + simInput.moveZ;
+    // Touch input: look deltas + queued actions
+    if (simInput.lookDX !== 0 || simInput.lookDY !== 0) {
+      const TOUCH_SENS = 0.0042;
+      yaw.current -= simInput.lookDX * TOUCH_SENS;
+      pitch.current = THREE.MathUtils.clamp(
+        pitch.current - simInput.lookDY * TOUCH_SENS,
+        PITCH_MIN,
+        PITCH_MAX,
+      );
+      simInput.lookDX = 0;
+      simInput.lookDY = 0;
+    }
+    if (simInput.jumpQueued) {
+      simInput.jumpQueued = false;
+      if (grounded.current && !dead) {
+        vy.current = JUMP_VELOCITY;
+        grounded.current = false;
+      }
+    }
+    if (simInput.reloadQueued) {
+      simInput.reloadQueued = false;
+      if (!dead) tryReload();
+    }
+
+    // 1. Input direction (dead players don't move)
+    const lx = dead ? 0 : (keys.current.a ? 1 : 0) + (keys.current.d ? -1 : 0) + simInput.moveX;
+    const lz = dead ? 0 : (keys.current.w ? 1 : 0) + (keys.current.s ? -1 : 0) + simInput.moveZ;
     const moving = Math.abs(lx) > 0.15 || Math.abs(lz) > 0.15;
 
-    // 2. Body faces the camera yaw.
+    // 2. Face the camera yaw
     let dy = yaw.current - g.rotation.y;
     while (dy > Math.PI) dy -= Math.PI * 2;
     while (dy < -Math.PI) dy += Math.PI * 2;
     g.rotation.y += dy * Math.min(1, TURN_LERP * dt);
 
-    // 3. Move with collide-and-slide; ADS walks slower.
+    // 3. Move
     const wantAds = ads.current || simInput.ads;
     if (moving && locked.current) {
-      const dir = TMP_DIR.set(lx, 0, lz)
+      const dir = new THREE.Vector3(lx, 0, lz)
         .normalize()
-        .applyEuler(TMP_EULER.set(0, yaw.current, 0));
+        .applyEuler(new THREE.Euler(0, yaw.current, 0));
       const sprint = keys.current.shift && lz > 0 && !wantAds ? SPRINT_MULT : 1;
       let speed = lz > 0 ? RUN_SPEED * sprint : lz < 0 ? BACK_SPEED : STRAFE_SPEED;
       if (wantAds) speed *= ADS_SPEED_MULT;
@@ -391,7 +549,7 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
       g.position.z = THREE.MathUtils.clamp(resolved.z, -ARENA_HALF, ARENA_HALF);
     }
 
-    // 3b. Vertical motion: jump arc under gravity, land at y = 0 (flat arena).
+    // 3b. Vertical motion
     if (!grounded.current) {
       vy.current -= GRAVITY * dt;
       g.position.y += vy.current * dt;
@@ -402,10 +560,11 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
       }
     }
 
-    // 4. Full-auto fire while LMB or the FIRE button is held.
+    // 4. Fire
     const wantFire = firing.current || simInput.firing;
     if (
       locked.current &&
+      !dead &&
       wantFire &&
       !reloading &&
       ammo.current > 0 &&
@@ -414,10 +573,12 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
       lastShot.current = now;
       shoot();
     }
-    if (wantFire && ammo.current <= 0 && !reloading) tryReload(); // auto-reload on empty trigger
+    if (wantFire && !dead && ammo.current <= 0 && !reloading) tryReload();
 
-    // 5. Animation state machine: reload > airborne > fire > locomotion > idle.
-    if (reloading) {
+    // 5. Animation state machine
+    if (dead) {
+      play("idle");
+    } else if (reloading) {
       play("reload", true);
     } else if (!grounded.current) {
       play(moving ? "run-jump" : "jump", true);
@@ -434,7 +595,21 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
       play("idle");
     }
 
-    // 6. Camera: over-the-shoulder orbit; ADS pulls in + narrows FOV.
+    // 5b. Broadcast pose to friends (~12 Hz, unreliable)
+    if (online && isJoined() && now - lastBroadcast.current >= BROADCAST_MS) {
+      lastBroadcast.current = now;
+      me()?.setState(
+        "s",
+        {
+          p: [g.position.x, g.position.y, g.position.z],
+          ry: g.rotation.y,
+          a: dead ? "dead" : current.current,
+        },
+        false,
+      );
+    }
+
+    // 6. Camera
     const dist = wantAds ? ADS_DIST : CAM_DIST;
     const targetFov = wantAds ? ADS_FOV : BASE_FOV;
     const cam = cameraRef.current;
@@ -443,28 +618,31 @@ export function Player({ locked }: { locked: React.RefObject<boolean> }) {
       cam.updateProjectionMatrix();
     }
 
-    const fwd = TMP_FWD.set(Math.sin(yaw.current), 0, Math.cos(yaw.current));
-    const right = TMP_RIGHT.set(-Math.cos(yaw.current), 0, Math.sin(yaw.current));
-    const pivot = TMP_PIVOT.copy(g.position);
-    pivot.y += CAM_HEIGHT;
+    const fwd = new THREE.Vector3(Math.sin(yaw.current), 0, Math.cos(yaw.current));
+    const right = new THREE.Vector3(-Math.cos(yaw.current), 0, Math.sin(yaw.current));
+    const pivot = g.position.clone().add(new THREE.Vector3(0, CAM_HEIGHT, 0));
 
-    const camPos = TMP_CAM.copy(pivot)
+    const camPos = pivot
+      .clone()
       .addScaledVector(fwd, -dist * Math.cos(pitch.current))
-      .addScaledVector(right, CAM_SHOULDER);
-    camPos.y += -dist * Math.sin(pitch.current) * 0.9 + 0.15;
+      .addScaledVector(right, CAM_SHOULDER)
+      .add(new THREE.Vector3(0, -dist * Math.sin(pitch.current) * 0.9 + 0.15, 0));
     camPos.y = Math.max(camPos.y, 0.25);
 
     camera.position.lerp(camPos, Math.min(1, 18 * dt));
-    const lookTarget = TMP_LOOK.copy(pivot)
+    const lookTarget = pivot
+      .clone()
       .addScaledVector(fwd, 3)
+      .add(new THREE.Vector3(0, Math.sin(pitch.current) * 3, 0))
       .addScaledVector(right, CAM_SHOULDER);
-    lookTarget.y += Math.sin(pitch.current) * 3;
     camera.lookAt(lookTarget);
   });
 
   return (
     <group ref={group}>
-      <primitive object={character} scale={CHARACTER_SCALE} />
+      <group ref={body}>
+        <primitive object={character} scale={CHARACTER_SCALE} />
+      </group>
     </group>
   );
 }

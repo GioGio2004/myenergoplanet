@@ -1,16 +1,20 @@
+import { clerkMiddleware } from "@clerk/nextjs/server";
 import { type NextRequest, NextResponse } from "next/server";
 
 // Supported locales – extend as needed
 const SUPPORTED_LOCALES = ["en", "ka"] as const;
 const DEFAULT_LOCALE = "en" as const;
 
-export function proxy(request: NextRequest) {
+function localeRewrite(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Skip Next.js internals, static files, API routes, and the SW itself
+  // Skip Next.js internals, static files, API routes, Clerk's proxy, and the SW itself
   if (
     pathname.startsWith("/_next") ||
     pathname.startsWith("/api") ||
+    pathname.startsWith("/__clerk") ||
+    pathname.startsWith("/sign-in") ||
+    pathname.startsWith("/sign-up") ||
     pathname.startsWith("/favicon") ||
     pathname.startsWith("/sw.js") ||
     pathname.startsWith("/workbox-") ||
@@ -36,7 +40,15 @@ export function proxy(request: NextRequest) {
   return NextResponse.next();
 }
 
+export const proxy = clerkMiddleware((_auth, request) => {
+  return localeRewrite(request);
+});
+
 export const config = {
   // Run on every request except static assets handled by Next.js itself
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico).*)",
+    "/(api|trpc)(.*)",
+    "/__clerk/:path*",
+  ],
 };
