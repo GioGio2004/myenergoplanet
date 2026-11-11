@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { AnimatePresence, motion, type Transition } from "motion/react";
+import { preloadArena } from "@/components/arena/ArenaLoader";
 import { QrCode } from "./QrCode";
 import { SealStamp } from "@/components/motifs/SealStamp";
 import { joinUrl } from "@/lib/roomCode";
@@ -13,6 +15,8 @@ export type RoomState =
 // Weighted, slightly overshooting spring: the pill "pours" into the card.
 const MORPH: Transition = { type: "spring", stiffness: 170, damping: 21, mass: 1.1 };
 const RADIUS = 36;
+const QUIET_LINK =
+  "inline-block rounded-full px-4 py-1.5 text-sm tracking-wide text-stone-blue transition-colors hover:text-rice-paper focus-visible:ring-1 focus-visible:ring-stone-blue outline-none";
 
 export function CreateRoom({
   room,
@@ -86,18 +90,36 @@ export function CreateRoom({
         </motion.div>
       </div>
 
-      <AnimatePresence>
-        {ready && (
+      <AnimatePresence mode="wait" initial={false}>
+        {ready ? (
           <motion.button
+            key="close"
             type="button"
             onClick={onClose}
             initial={{ opacity: 0, y: -6 }}
             animate={{ opacity: 1, y: 0, transition: { delay: 0.5, duration: 0.5 } }}
             exit={{ opacity: 0, transition: { duration: 0.15 } }}
-            className="rounded-full px-4 py-1.5 text-sm tracking-wide text-stone-blue transition-colors hover:text-rice-paper focus-visible:ring-1 focus-visible:ring-stone-blue outline-none"
+            className={QUIET_LINK}
           >
             Close room
           </motion.button>
+        ) : (
+          <motion.div
+            key="practice"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1, transition: { duration: 0.4 } }}
+            exit={{ opacity: 0, transition: { duration: 0.15 } }}
+          >
+            {/* Local match on this screen: two players on the keyboard, or bots. */}
+            <Link
+              href="/arena"
+              onPointerEnter={preloadArena}
+              onFocus={preloadArena}
+              className={QUIET_LINK}
+            >
+              Practice on this keyboard
+            </Link>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>
