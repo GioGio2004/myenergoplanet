@@ -35,7 +35,7 @@ export const send = mutation({
     code: v.string(),
     auth: peerAuth,
     to: v.string(),
-    kind: v.union(v.literal("offer"), v.literal("answer"), v.literal("ice")),
+    kind: v.union(v.literal("offer"), v.literal("answer"), v.literal("ice"), v.literal("relay")),
     payload: v.string(),
   },
   returns: v.null(),
@@ -66,7 +66,7 @@ export const listForPeer = query({
     v.object({
       id: v.id("signals"),
       from: v.string(),
-      kind: v.union(v.literal("offer"), v.literal("answer"), v.literal("ice")),
+      kind: v.union(v.literal("offer"), v.literal("answer"), v.literal("ice"), v.literal("relay")),
       payload: v.string(),
     }),
   ),

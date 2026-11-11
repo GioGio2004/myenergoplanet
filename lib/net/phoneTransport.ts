@@ -10,14 +10,18 @@ import {
   INPUT_CHANNEL,
   INPUT_KEEPALIVE_MS,
   INPUT_SEND_INTERVAL_MS,
+  RELAY_ALIVE_MS,
   encodeInput,
+  encodeRelayInput,
   iceServers,
   parseHostMessage,
   parseSignal,
   type ControllerInput,
   type HostMessage,
+  type LinkMode,
   type SignalPayload,
 } from "./protocol";
+import { RelaySender, openRelayStream, randomRelayKey } from "./relayClient";
 
 export type PhoneLinkState = "connecting" | "open" | "reconnecting";
 
@@ -25,17 +29,32 @@ export type PhoneLinkState = "connecting" | "open" | "reconnecting";
 const ANSWER_TIMEOUT_MS = 10_000;
 /** "disconnected" can recover on its own; give it this long before reconnecting. */
 const DISCONNECTED_GRACE_MS = 3_000;
-const RETRY_DELAYS_MS = [800, 1_500, 3_000, 5_000];
+/** Direct-link retries. Once the relay carries the controller, retry only occasionally. */
+const RETRY_DELAYS_MS = [800, 1_500, 3_000, 5_000, 10_000];
+const RETRY_WHILE_RELAYING_MS = 30_000;
+/** Re-announce the relay key this often while the host is silent on the relay. */
+const RELAY_ANNOUNCE_MS = 4_000;
+const STATUS_CHECK_MS = 1_000;
 
-type SignalRow = { id: Id<"signals">; from: string; kind: "offer" | "answer" | "ice"; payload: string };
+type SignalRow = {
+  id: Id<"signals">;
+  from: string;
+  kind: "offer" | "answer" | "ice" | "relay";
+  payload: string;
+};
 
 /**
- * A phone's connection to the host screen: offers a WebRTC connection through Convex
- * signalling, streams controller input on the unreliable "input" channel and receives game
- * events on the reliable "events" channel. Reconnects by itself until disposed.
+ * A phone's connection to the host screen.
+ *
+ * Two paths run side by side:
+ * - a direct WebRTC link (signalled through Convex): lowest latency, preferred;
+ * - the Wi-Fi relay (HTTP through this app's own server): works wherever the page loads,
+ *   used when the network or a firewall blocks WebRTC.
+ * Input goes out on the direct link when it is open, else on the relay. Reconnects by itself.
  */
 export class PhoneTransport {
   state: PhoneLinkState = "connecting";
+  mode: LinkMode | null = null;
 
   private pc: RTCPeerConnection | null = null;
   private input: RTCDataChannel | null = null;
@@ -45,12 +64,20 @@ export class PhoneTransport {
   private pendingIce: RTCIceCandidateInit[] = [];
   private processed = new Set<string>();
   private unwatch: () => void;
-  private sender: number;
+  private intervals: number[] = [];
   private retryTimer = 0;
   private graceTimer = 0;
   private answerTimer = 0;
   private attempts = 0;
+  private everConnected = false;
   private disposed = false;
+
+  // Wi-Fi relay
+  private readonly relayKey = randomRelayKey();
+  private closeRelayStream: (() => void) | null = null;
+  private relaySender = new RelaySender();
+  private lastRelayFromHost = 0;
+  private lastAnnounce = 0;
 
   private latest: ControllerInput = { x: 0, y: 0, dash: false, brace: false };
   private dirty = true;
@@ -69,13 +96,22 @@ export class PhoneTransport {
     const onUpdate = () => this.onSignals(watch.localQueryResult() ?? []);
     this.unwatch = watch.onUpdate(onUpdate);
     onUpdate();
-    this.sender = window.setInterval(() => this.flushInput(), INPUT_SEND_INTERVAL_MS);
+
+    this.closeRelayStream = openRelayStream([`${this.relayKey}.down`], (_ch, data) =>
+      this.onRelayMessage(data),
+    );
+    this.announceRelay();
+
+    this.intervals.push(
+      window.setInterval(() => this.flushInput(), INPUT_SEND_INTERVAL_MS),
+      window.setInterval(() => this.tick(), STATUS_CHECK_MS),
+    );
     this.connect();
   }
 
   // ── public API ───────────────────────────────────────────────────────────
 
-  /** Update the controller state; it is sent on the next tick. */
+  /** Update the controller state; it is sent right away (rate-capped). */
   setInput(x: number, y: number, dash: boolean, brace: boolean): void {
     const l = this.latest;
     if (l.x === x && l.y === y && l.dash === dash && l.brace === brace) return;
@@ -84,7 +120,7 @@ export class PhoneTransport {
     l.dash = dash;
     l.brace = brace;
     this.dirty = true;
-    this.flushInput(); // button presses go out immediately
+    this.flushInput();
   }
 
   onMessage(listener: (msg: HostMessage) => void): () => void {
@@ -102,19 +138,22 @@ export class PhoneTransport {
   };
 
   getState = (): PhoneLinkState => this.state;
+  getMode = (): LinkMode | null => this.mode;
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.unwatch();
-    window.clearInterval(this.sender);
+    for (const id of this.intervals) window.clearInterval(id);
     this.clearTimers();
     this.teardown();
+    this.closeRelayStream?.();
+    this.closeRelayStream = null;
     this.stateListeners.clear();
     this.messageListeners.clear();
   }
 
-  // ── connection ───────────────────────────────────────────────────────────
+  // ── direct link (WebRTC) ─────────────────────────────────────────────────
 
   private connect(): void {
     if (this.disposed) return;
@@ -124,7 +163,14 @@ export class PhoneTransport {
     this.remoteSet = false;
     this.pendingIce = [];
 
-    const pc = new RTCPeerConnection({ iceServers: iceServers() });
+    let pc: RTCPeerConnection;
+    try {
+      pc = new RTCPeerConnection({ iceServers: iceServers() });
+    } catch {
+      // No WebRTC here (old browser, blocked): the relay carries everything.
+      this.scheduleReconnect();
+      return;
+    }
     this.pc = pc;
     const input = pc.createDataChannel(INPUT_CHANNEL, { ordered: false, maxRetransmits: 0 });
     input.binaryType = "arraybuffer";
@@ -154,12 +200,12 @@ export class PhoneTransport {
       this.attempts = 0;
       window.clearTimeout(this.answerTimer);
       this.dirty = true;
-      this.setState("open");
+      this.recompute();
     };
     events.onclose = () => {
       if (pc === this.pc) this.scheduleReconnect();
     };
-    events.onmessage = (m) => this.onHostMessage(m.data);
+    events.onmessage = (m) => this.onHostMessage(m.data, "direct");
 
     void (async () => {
       try {
@@ -168,7 +214,7 @@ export class PhoneTransport {
         if (pc !== this.pc) return;
         this.signal("offer", { sid, sdp: pc.localDescription!.toJSON() });
         this.answerTimer = window.setTimeout(() => {
-          if (pc === this.pc && this.state !== "open") this.scheduleReconnect();
+          if (pc === this.pc && this.events?.readyState !== "open") this.scheduleReconnect();
         }, ANSWER_TIMEOUT_MS);
       } catch {
         this.scheduleReconnect();
@@ -178,10 +224,12 @@ export class PhoneTransport {
 
   private scheduleReconnect(): void {
     if (this.disposed) return;
-    this.setState("reconnecting");
     this.teardown();
+    this.recompute();
     window.clearTimeout(this.retryTimer);
-    const delay = RETRY_DELAYS_MS[Math.min(this.attempts, RETRY_DELAYS_MS.length - 1)];
+    const delay = this.relayAlive()
+      ? RETRY_WHILE_RELAYING_MS
+      : RETRY_DELAYS_MS[Math.min(this.attempts, RETRY_DELAYS_MS.length - 1)];
     this.attempts++;
     this.retryTimer = window.setTimeout(() => this.connect(), delay);
   }
@@ -234,7 +282,7 @@ export class PhoneTransport {
     }
   }
 
-  private signal(kind: "offer" | "ice", payload: SignalPayload): void {
+  private signal(kind: "offer" | "ice" | "relay", payload: SignalPayload): void {
     void this.client
       .mutation(api.signals.send, {
         code: this.code,
@@ -246,36 +294,72 @@ export class PhoneTransport {
       .catch(() => {});
   }
 
+  // ── Wi-Fi relay ──────────────────────────────────────────────────────────
+
+  /** Tell the host (through Convex) which relay key this phone listens on. */
+  private announceRelay(): void {
+    this.lastAnnounce = performance.now();
+    this.signal("relay", { sid: this.relayKey, key: this.relayKey });
+  }
+
+  private relayAlive(): boolean {
+    return this.lastRelayFromHost > 0 && performance.now() - this.lastRelayFromHost < RELAY_ALIVE_MS;
+  }
+
+  private onRelayMessage(data: string): void {
+    this.lastRelayFromHost = performance.now();
+    this.onHostMessage(data, "relay");
+    this.recompute();
+  }
+
   // ── data ─────────────────────────────────────────────────────────────────
 
   private flushInput(): void {
-    const input = this.input;
-    if (!input || input.readyState !== "open") return;
+    const direct = this.input?.readyState === "open" ? this.input : null;
+    if (!direct && !this.relayAlive()) return;
     const now = performance.now();
     if (!this.dirty && now - this.lastSentAt < INPUT_KEEPALIVE_MS) return;
-    // Cap the send rate, except for the first packet after a change of buttons.
+    // Cap the send rate (the interval picks up whatever is left).
     if (this.dirty && now - this.lastSentAt < INPUT_SEND_INTERVAL_MS * 0.5) return;
     this.seq = (this.seq + 1) & 0xffff;
-    input.send(encodeInput(this.seq, this.latest));
+    if (direct) direct.send(encodeInput(this.seq, this.latest));
+    else this.relaySender.send(`${this.relayKey}.up`, encodeRelayInput(this.seq, this.latest), "in");
     this.lastSentAt = now;
     this.dirty = false;
   }
 
-  private onHostMessage(data: unknown): void {
+  private onHostMessage(data: unknown, via: LinkMode): void {
     const msg = parseHostMessage(data);
     if (!msg) return;
     if (msg.t === "ping") {
-      if (this.events?.readyState === "open") {
-        this.events.send(JSON.stringify({ t: "pong", at: msg.at }));
-      }
+      const pong = JSON.stringify({ t: "pong", at: msg.at });
+      if (via === "direct" && this.events?.readyState === "open") this.events.send(pong);
+      else if (via === "relay") this.relaySender.send(`${this.relayKey}.up`, pong);
       return;
     }
     for (const l of this.messageListeners) l(msg);
   }
 
-  private setState(state: PhoneLinkState): void {
-    if (this.state === state) return;
+  /** Once a second: notice a silent relay, re-announce it, refresh the state. */
+  private tick(): void {
+    if (this.disposed) return;
+    const direct = this.events?.readyState === "open";
+    if (!direct && !this.relayAlive() && performance.now() - this.lastAnnounce > RELAY_ANNOUNCE_MS) {
+      // The host may have reloaded and forgotten our key.
+      this.announceRelay();
+    }
+    this.recompute();
+  }
+
+  private recompute(): void {
+    const direct = this.events?.readyState === "open";
+    const mode: LinkMode | null = direct ? "direct" : this.relayAlive() ? "relay" : null;
+    if (mode) this.everConnected = true;
+    const state: PhoneLinkState = mode ? "open" : this.everConnected ? "reconnecting" : "connecting";
+    if (state === this.state && mode === this.mode) return;
+    if (mode && !this.mode) this.dirty = true; // resend input on the newly opened path
     this.state = state;
+    this.mode = mode;
     for (const l of this.stateListeners) l();
   }
 }

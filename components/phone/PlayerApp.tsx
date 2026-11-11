@@ -16,7 +16,12 @@ import type { PlayerSlot } from "@/game/types";
 import { SealStamp } from "@/components/motifs/SealStamp";
 import { usePlayerSeat, type PlayerSeat } from "@/lib/sessions";
 import type { PhoneTransport } from "@/lib/net/phoneTransport";
-import { closePhoneTransport, usePhoneLink, usePhoneTransport } from "@/lib/net/usePhoneTransport";
+import {
+  closePhoneTransport,
+  usePhoneLink,
+  usePhoneMode,
+  usePhoneTransport,
+} from "@/lib/net/usePhoneTransport";
 import { Controller } from "./Controller";
 import { roomErrorCode, roomErrorMessage } from "@/lib/roomErrors";
 import { useSuggestedName } from "@/lib/suggestedName";
@@ -199,6 +204,7 @@ function SeatView({
 }) {
   const style = PLAYER_STYLES[me.slot as PlayerSlot];
   const link = usePhoneLink(transport);
+  const mode = usePhoneMode(transport);
   const setStatus = useMutation(api.rooms.setStatus);
   const leave = useMutation(api.players.leave);
   const [busy, setBusy] = useState(false);
@@ -276,7 +282,7 @@ function SeatView({
             className={`size-2 rounded-full ${link === "open" ? "bg-current" : "animate-pulse border border-current"}`}
           />
           {link === "open"
-            ? "Controller linked to the big screen"
+            ? `Controller linked to the big screen${mode === "relay" ? " (Wi-Fi relay)" : ""}`
             : link === "reconnecting"
               ? "Reconnecting to the big screen…"
               : "Linking to the big screen…"}

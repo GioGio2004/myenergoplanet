@@ -45,3 +45,16 @@ describe("messages", () => {
     expect(parseSignal("{}")).toBeNull();
   });
 });
+
+describe("relay input", () => {
+  it("round-trips through JSON", async () => {
+    const { encodeRelayInput, decodeRelayInput } = await import("./protocol");
+    const out = { x: 0, y: 0, dash: false, brace: false };
+    const seq = decodeRelayInput(JSON.parse(encodeRelayInput(9, { x: -0.25, y: 1, dash: false, brace: true })), out);
+    expect(seq).toBe(9);
+    expect(out.x).toBeCloseTo(-0.25, 1);
+    expect(out.y).toBe(1);
+    expect(out.brace).toBe(true);
+    expect(decodeRelayInput({ t: "pong" }, out)).toBe(-1);
+  });
+});

@@ -65,8 +65,35 @@ export type HostMessage =
   | { t: "vibrate"; ms: number }
   | { t: "ping"; at: number };
 
-/** Phone → host messages on the events channel. */
+/** Phone → host messages on the events channel (and over the relay). */
 export type PhoneMessage = { t: "pong"; at: number };
+
+/** How a phone's controller reaches the host right now. */
+export type LinkMode = "direct" | "relay";
+
+/** A host message counts as "relay alive" for this long. */
+export const RELAY_ALIVE_MS = 6_000;
+
+/** Input over the relay: JSON instead of the 5-byte packet (the relay speaks text). */
+export type RelayInput = { t: "in"; s: number; x: number; y: number; f: number };
+
+export function encodeRelayInput(seq: number, input: ControllerInput): string {
+  const r = (v: number) => Math.round(clampUnit(v) * 127) / 127;
+  const f = (input.dash ? FLAG_DASH : 0) | (input.brace ? FLAG_BRACE : 0);
+  return JSON.stringify({ t: "in", s: seq & 0xffff, x: r(input.x), y: r(input.y), f } satisfies RelayInput);
+}
+
+/** Decode relay input into `out`; returns the sequence number or -1. */
+export function decodeRelayInput(msg: { t?: unknown; s?: unknown; x?: unknown; y?: unknown; f?: unknown }, out: ControllerInput): number {
+  if (msg.t !== "in" || typeof msg.s !== "number" || typeof msg.x !== "number" || typeof msg.y !== "number" || typeof msg.f !== "number") {
+    return -1;
+  }
+  out.x = clampUnit(msg.x);
+  out.y = clampUnit(msg.y);
+  out.dash = (msg.f & FLAG_DASH) !== 0;
+  out.brace = (msg.f & FLAG_BRACE) !== 0;
+  return msg.s & 0xffff;
+}
 
 export function parseHostMessage(data: unknown): HostMessage | null {
   if (typeof data !== "string") return null;
@@ -93,6 +120,8 @@ export type SignalPayload = {
   sid: string;
   sdp?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
+  /** Kind "relay": the phone's Wi-Fi relay key (channels `<key>.up` / `<key>.down`). */
+  key?: string;
 };
 
 export function parseSignal(payload: string): SignalPayload | null {

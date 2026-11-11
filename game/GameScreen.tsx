@@ -8,7 +8,7 @@ import { useSettings } from "@/lib/settings";
 import { PLAYER_STYLES, gameConfig } from "./config";
 import { GameProvider, makeGameSettings, useGame, type GameContextValue } from "./hooks";
 import { GameRuntime } from "./runtime";
-import type { InputSource, PlayerSetup } from "./types";
+import type { InputSource, PlayerInput, PlayerSetup } from "./types";
 import { createMatch } from "./sim/match";
 import { createInputSource } from "./input";
 import { PhysicsWorld } from "./physics/PhysicsWorld";
@@ -161,14 +161,29 @@ function DebugReadout() {
         `phase ${runtime.phase}  t ${runtime.simTime.toFixed(1)}s  ` +
         `scale ${runtime.timeScale.toFixed(2)}  radius ${runtime.arenaRadius}  ` +
         `yaw ${runtime.cameraYaw.toFixed(2)}`;
-      const rows = runtime.wrestlers.map(
-        (w) =>
+      const rows = runtime.wrestlers.map((w) => {
+        let input = "";
+        // Phones: show the input the host is receiving right now (sampling it has no side effects).
+        if (w.control === "remote") {
+          const source = runtime.inputs[w.slot];
+          if (source) {
+            source.sample(scratch, w.slot, runtime, 0);
+            input =
+              `  phone (${scratch.x.toFixed(2)}, ${scratch.y.toFixed(2)})` +
+              `${scratch.dash ? " dash" : ""}${scratch.brace ? " brace" : ""}`;
+          } else {
+            input = "  phone: no input source";
+          }
+        }
+        return (
           `${w.style.label.padEnd(13)} ${w.status.padEnd(5)} ` +
           `(${w.x.toFixed(1)}, ${w.y.toFixed(1)}, ${w.z.toFixed(1)})` +
-          `${w.dashing ? " DASH" : ""}${w.bracing ? " BRACE" : ""}`,
-      );
+          `${w.dashing ? " DASH" : ""}${w.bracing ? " BRACE" : ""}${input}`
+        );
+      });
       return [head, ...rows].join("\n");
     };
+    const scratch: PlayerInput = { x: 0, y: 0, dash: false, brace: false };
     const id = window.setInterval(() => setText(describe()), 250);
     return () => window.clearInterval(id);
   }, [runtime]);

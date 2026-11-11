@@ -47,7 +47,7 @@ export default defineSchema({
     roomId: v.id("rooms"),
     fromPeer: v.string(),
     toPeer: v.string(),
-    kind: v.union(v.literal("offer"), v.literal("answer"), v.literal("ice")),
+    kind: v.union(v.literal("offer"), v.literal("answer"), v.literal("ice"), v.literal("relay")),
     payload: v.string(),
   })
     .index("by_roomId_and_toPeer", ["roomId", "toPeer"])

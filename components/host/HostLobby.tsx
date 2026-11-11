@@ -121,7 +121,8 @@ function Seat({
     detail = "Reconnecting…";
     dot = "var(--stone-blue)";
   } else if (link?.state === "open") {
-    detail = link.rttMs === null ? "Controller linked" : `Controller · ${link.rttMs} ms`;
+    const via = link.mode === "relay" ? "relay" : "direct";
+    detail = link.rttMs === null ? `Controller · ${via}` : `Controller · ${via} · ${link.rttMs} ms`;
     dot = DOT[bucket(link.rttMs)];
   } else {
     detail = "Linking controller…";

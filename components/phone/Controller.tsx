@@ -27,6 +27,7 @@ export function Controller({
   pointsToWin: number;
 }) {
   const link = useSyncExternalStore(transport.subscribe, transport.getState, () => "connecting" as const);
+  const mode = useSyncExternalStore(transport.subscribe, transport.getMode, () => null);
   const [score, setScore] = useState(0);
   const [cooldowns, setCooldowns] = useState<Cooldowns>({ dash: 0, brace: 0, bracing: false, braceLeft: 0 });
   const [flash, setFlash] = useState<Flash | null>(null);
@@ -215,6 +216,11 @@ export function Controller({
             className={`size-2.5 shrink-0 rounded-full ${link === "open" ? "bg-[#7BE0A0]" : "animate-pulse bg-rice-paper/60"}`}
           />
           <span className="truncate font-serif text-xl">{name}</span>
+          {mode && (
+            <span className="shrink-0 text-[0.65rem] tracking-[0.2em] uppercase opacity-60">
+              {mode === "direct" ? "direct" : "Wi-Fi relay"}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5" aria-label={`Score ${score} of ${pointsToWin}`}>
           {Array.from({ length: pointsToWin }, (_, i) => (
