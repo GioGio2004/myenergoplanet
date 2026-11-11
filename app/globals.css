@@ -1,1 +1,71 @@
 @import "tailwindcss";
+
+/* ─── Design tokens ─────────────────────────────────────────────────────────
+   "Old Chinese, clean & minimal". Tailwind utilities: bg-egyptian-blue,
+   text-rice-paper, border-stone-blue/30, font-serif, font-brush, ease-ink… */
+@theme {
+  --color-egyptian-blue: #03203e;
+  --color-stone-blue: #629cc5;
+  --color-scarlet: #ec2f36;
+  --color-rice-paper: #f2ead8;
+  --color-ink: #01101f;
+  --color-gold: #d9a441;
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Cormorant Garamond", "Songti SC", "SimSun", serif;
+  --font-brush: "Ma Shan Zheng", "Cormorant Garamond", serif;
+
+  --ease-ink: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Plain CSS variables for non-Tailwind use (SVG, canvas, inline styles). */
+:root {
+  --egyptian-blue: #03203e;
+  --stone-blue: #629cc5;
+  --scarlet: #ec2f36;
+  --rice-paper: #f2ead8;
+  --ink: #01101f;
+  --gold: #d9a441;
+}
+
+html,
+body {
+  background: var(--egyptian-blue);
+  color: var(--rice-paper);
+}
+
+::selection {
+  background: var(--scarlet);
+  color: var(--rice-paper);
+}
+
+/* ─── Rice-paper grain: fixed noise overlay ─────────────────────────────── */
+.grain {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  opacity: 0.09;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 1.4 -0.2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ─── Slow cloud drift ──────────────────────────────────────────────────── */
+@keyframes cloud-drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(28px, -6px, 0);
+  }
+}
+
+.cloud-drift {
+  animation: cloud-drift 18s var(--ease-ink) infinite alternate;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-drift {
+    animation: none;
+  }
+}
