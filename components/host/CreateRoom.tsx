@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { AnimatePresence, motion, type Transition } from "motion/react";
 import { preloadArena } from "@/components/arena/ArenaLoader";
 import { QrCode } from "./QrCode";
@@ -22,15 +23,26 @@ export function CreateRoom({
   room,
   onCreate,
   onClose,
+  lobby,
+  error,
 }: {
   room: RoomState;
   onCreate: () => void;
   onClose: () => void;
+  /** Rendered under the card once the room is open (the live player seats). */
+  lobby?: ReactNode;
+  /** Shown under the button when opening a room failed. */
+  error?: string | null;
 }) {
   const ready = room.status === "ready";
 
   return (
-    <div className="flex flex-col items-center gap-8">
+    <div className="flex w-full flex-col items-center gap-7">
+      {error && !ready && (
+        <p role="alert" className="text-sm text-scarlet">
+          {error}
+        </p>
+      )}
       <div className="relative">
         {/* Ink pulse while the room is being opened */}
         <AnimatePresence>
@@ -90,6 +102,8 @@ export function CreateRoom({
         </motion.div>
       </div>
 
+      <AnimatePresence initial={false}>{ready && lobby}</AnimatePresence>
+
       <AnimatePresence mode="wait" initial={false}>
         {ready ? (
           <motion.button
@@ -141,7 +155,7 @@ function ReadyCard({ code }: { code: string }) {
 
       {/* QR on a rice-paper inset for contrast */}
       <div className="rounded-[26px] bg-rice-paper p-4 shadow-[inset_0_0_0_1px_rgba(3,32,62,0.08)] sm:p-5">
-        <div className="size-[clamp(220px,32vh,420px)]">
+        <div className="size-[clamp(200px,27vh,400px)]">
           <QrCode value={url} label={`QR code to join room ${code}`} />
         </div>
       </div>

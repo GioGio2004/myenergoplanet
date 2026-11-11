@@ -20,6 +20,8 @@ export type HudProps = {
   onSetupsChange: (next: PlayerSetup[]) => void;
   /** Leave the game screen (back to the landing page). */
   onExit: () => void;
+  /** False when the roster comes from elsewhere (an online room): the local lobby is hidden. */
+  showLobby?: boolean;
 };
 
 type Screen = "lobby" | "match" | "results";
@@ -37,7 +39,7 @@ function screenOf(phase: Phase): Screen {
  * store it shows (`useHudValue`), so a clock tick re-renders the clock and nothing
  * else. The root ignores the pointer; only the interactive panels take it back.
  */
-export function Hud({ setups, onSetupsChange, onExit }: HudProps): JSX.Element {
+export function Hud({ setups, onSetupsChange, onExit, showLobby = true }: HudProps): JSX.Element {
   const { reduceMotion } = useGameSettings();
   const phase = useHudValue((hud) => hud.phase);
   const screen = screenOf(phase);
@@ -47,7 +49,7 @@ export function Hud({ setups, onSetupsChange, onExit }: HudProps): JSX.Element {
     <MotionConfig reducedMotion={reduceMotion ? "always" : "user"}>
       <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden font-sans text-rice-paper">
         <AnimatePresence>
-          {screen === "lobby" && (
+          {screen === "lobby" && showLobby && (
             <LocalLobby
               key="lobby"
               setups={setups}

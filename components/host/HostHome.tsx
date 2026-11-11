@@ -1,27 +1,98 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useMutation, useQuery } from "convex/react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { api } from "@/convex/_generated/api";
 import { NavPanel, type HostView } from "./NavPanel";
 import { CreateRoom, type RoomState } from "./CreateRoom";
+import { HostLobby } from "./HostLobby";
 import { AboutView, HowToPlayView, SettingsView } from "./InfoViews";
 import { CloudScroll } from "@/components/motifs/CloudScroll";
-import { createRoomStub } from "@/lib/devRoom";
+import { preloadArena } from "@/components/arena/ArenaLoader";
+import { useHostTouch } from "@/components/arena/useHostTouch";
+import { useHostRoom } from "@/lib/sessions";
+import { roomErrorMessage } from "@/lib/roomErrors";
 import { useSettings } from "@/lib/settings";
 
 export function HostHome() {
+  const router = useRouter();
   const [view, setView] = useState<HostView>("play");
-  const [room, setRoom] = useState<RoomState>({ status: "idle" });
   const [settings] = useSettings();
 
+  // The open room survives refreshes (per tab) so the QR code stays the same.
+  const [hostRoom, setHostRoom] = useHostRoom();
+  const lobby = useQuery(api.rooms.lobby, hostRoom ? { code: hostRoom.code } : "skip");
+  const createRoom = useMutation(api.rooms.create);
+  const closeRoom = useMutation(api.rooms.close);
+  const setStatus = useMutation(api.rooms.setStatus);
+
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+
+  // A stored room that no longer exists (closed, cleaned up) is forgotten.
+  const roomGone = hostRoom !== null && (lobby === null || lobby?.status === "closed");
+  useEffect(() => {
+    if (roomGone) setHostRoom(null);
+  }, [roomGone, setHostRoom]);
+
+  useHostTouch(roomGone ? null : hostRoom);
+
+  // Warm the 3D bundle while players join.
+  const roomOpen = hostRoom !== null && !roomGone;
+  useEffect(() => {
+    if (roomOpen) preloadArena();
+  }, [roomOpen]);
+
+  // Started (from this screen or from the leader's phone): go to the arena.
+  const matchOn = lobby?.status === "playing" || lobby?.status === "results";
+  useEffect(() => {
+    if (hostRoom && matchOn) router.push(`/arena?room=${hostRoom.code}`);
+  }, [hostRoom, matchOn, router]);
+
+  const room: RoomState = roomOpen
+    ? { status: "ready", code: hostRoom.code }
+    : creating
+      ? { status: "creating" }
+      : { status: "idle" };
+
   async function handleCreate() {
-    if (room.status !== "idle") return;
-    setRoom({ status: "creating" });
+    if (creating || roomOpen) return;
+    setCreating(true);
+    setCreateError(null);
     try {
-      const { code } = await createRoomStub();
-      setRoom({ status: "ready", code });
-    } catch {
-      setRoom({ status: "idle" });
+      setHostRoom(await createRoom({}));
+    } catch (error) {
+      setCreateError(roomErrorMessage(error));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  function handleClose() {
+    if (!hostRoom) return;
+    void closeRoom(hostRoom).catch(() => {});
+    setHostRoom(null);
+    setStartError(null);
+  }
+
+  async function handleStart() {
+    if (!hostRoom) return;
+    setStarting(true);
+    setStartError(null);
+    try {
+      await setStatus({
+        code: hostRoom.code,
+        status: "playing",
+        caller: { hostSecret: hostRoom.hostSecret },
+      });
+    } catch (error) {
+      setStartError(roomErrorMessage(error));
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -30,7 +101,7 @@ export function HostHome() {
       <div className="flex h-dvh w-full flex-col overflow-hidden md:flex-row">
         <NavPanel view={view} onChange={setView} />
 
-        <main className="relative flex flex-1 items-center justify-center overflow-hidden bg-[radial-gradient(120%_90%_at_50%_45%,var(--egyptian-blue)_45%,var(--ink)_100%)] px-6 py-10">
+        <main className="relative flex flex-1 items-center justify-center overflow-x-hidden overflow-y-auto bg-[radial-gradient(120%_90%_at_50%_45%,var(--egyptian-blue)_45%,var(--ink)_100%)] px-6 py-8">
           <StageClouds />
 
           <AnimatePresence mode="wait">
@@ -40,13 +111,23 @@ export function HostHome() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
               transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-              className="relative z-10 flex w-full items-center justify-center"
+              className="relative z-10 m-auto flex w-full items-center justify-center"
             >
               {view === "play" && (
                 <CreateRoom
                   room={room}
                   onCreate={handleCreate}
-                  onClose={() => setRoom({ status: "idle" })}
+                  onClose={handleClose}
+                  error={createError}
+                  lobby={
+                    <HostLobby
+                      key="lobby"
+                      players={lobby?.players ?? []}
+                      onStart={handleStart}
+                      starting={starting}
+                      error={startError}
+                    />
+                  }
                 />
               )}
               {view === "how" && <HowToPlayView />}

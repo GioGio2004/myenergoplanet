@@ -6,7 +6,15 @@ export const metadata: Metadata = {
   title: `${GAME_NAME} · Arena`,
 };
 
-// Local match on the host screen (keyboard players and bots) until phones are connected.
-export default function ArenaPage() {
-  return <ArenaLoader />;
+/**
+ * `/arena` is a local practice match (keyboard players and bots).
+ * `/arena?room=CODE` plays the players of an online room (opened by its host screen).
+ */
+export default async function ArenaPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  const { room } = await searchParams;
+  return <ArenaLoader roomCode={typeof room === "string" ? room : null} />;
 }

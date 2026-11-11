@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Canvas } from "@react-three/fiber";
 import { PerformanceMonitor } from "@react-three/drei";
 import { useReducedMotion } from "motion/react";
@@ -33,7 +33,19 @@ const DPR_STEP = 0.25;
  * The whole game on the host screen: one runtime, the 3D scene and the HUD on top.
  * Heavy (three.js + Rapier): load it with `next/dynamic` and `ssr: false`.
  */
-export default function GameScreen({ onExit }: { onExit: () => void }) {
+export type GameScreenProps = {
+  /** Leave the game screen. */
+  onExit: () => void;
+  /**
+   * A fixed roster (e.g. the players of an online room). When given, the local lobby
+   * is hidden and these players are used instead of the keyboard/bot setup.
+   */
+  roster?: PlayerSetup[] | null;
+  /** Extra UI rendered inside the game context, on top of the HUD. */
+  overlay?: ReactNode;
+};
+
+export default function GameScreen({ onExit, roster = null, overlay }: GameScreenProps) {
   const [game] = useState(() => {
     const runtime = new GameRuntime();
     return { runtime, match: createMatch(runtime) };
@@ -53,17 +65,21 @@ export default function GameScreen({ onExit }: { onExit: () => void }) {
   );
 
   // ── players and their input sources ──────────────────────────────────────
-  const [setups, setSetups] = useState<PlayerSetup[]>(DEFAULT_SETUPS);
+  const [localSetups, setLocalSetups] = useState<PlayerSetup[]>(DEFAULT_SETUPS);
+  const setups = roster ?? localSetups;
 
   useEffect(() => {
     // The roster can only change in the lobby; a match keeps the players it started with.
     if (runtime.phase !== "lobby") return;
     runtime.setPlayers(setups);
-    for (const setup of setups) {
-      runtime.setInput(setup.slot, createInputSource(setup.control));
+    for (let slot = 0; slot < runtime.inputs.length; slot++) {
+      const setup = setups.find((s) => s.slot === slot);
+      runtime.setInput(slot, setup ? createInputSource(setup.control) : null);
     }
-    return () => runtime.clearInputs();
   }, [runtime, setups]);
+
+  // Input sources hold window listeners: drop them when the screen goes away.
+  useEffect(() => () => runtime.clearInputs(), [runtime]);
 
   // ── adaptive resolution: step the DPR cap down when the frame rate sags ──
   const maxDpr = settings.quality.maxDpr;
@@ -111,7 +127,13 @@ export default function GameScreen({ onExit }: { onExit: () => void }) {
       </Canvas>
 
       <GameProvider value={context}>
-        <Hud setups={setups} onSetupsChange={setSetups} onExit={onExit} />
+        <Hud
+          setups={setups}
+          onSetupsChange={setLocalSetups}
+          onExit={onExit}
+          showLobby={roster === null}
+        />
+        {overlay}
         {debug && <DebugReadout />}
       </GameProvider>
     </div>
