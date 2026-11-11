@@ -19,12 +19,7 @@ import type {
   FunctionReference,
 } from "convex/server";
 
-declare const fullApi: ApiFromModules<{
-  friends: typeof friends;
-  http: typeof http;
-  matches: typeof matches;
-  users: typeof users;
-}>;
+declare const fullApi: ApiFromModules<{}>;
 
 /**
  * A utility for referencing Convex functions in your app's public API.
