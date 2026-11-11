@@ -107,12 +107,21 @@ export async function removePlayer(ctx: MutationCtx, player: Doc<"players">): Pr
   if (player.isLeader) await assignLeader(ctx, player.roomId);
 }
 
-/** Make the earliest-joined remaining player the leader (if nobody is). */
+/** Make the earliest-joined remaining human the leader (if nobody is). Bots never lead. */
 export async function assignLeader(ctx: MutationCtx, roomId: Id<"rooms">): Promise<void> {
-  const players = await playersInRoom(ctx, roomId);
-  if (players.length === 0 || players.some((p) => p.isLeader)) return;
-  const first = players.reduce((a, b) => (a._creationTime <= b._creationTime ? a : b));
+  const humans = (await playersInRoom(ctx, roomId)).filter((p) => !p.isBot);
+  if (humans.length === 0 || humans.some((p) => p.isLeader)) return;
+  const first = humans.reduce((a, b) => (a._creationTime <= b._creationTime ? a : b));
   await ctx.db.patch("players", first._id, { isLeader: true });
+}
+
+/** Delete every signalling row of a room (when it closes). */
+export async function deleteRoomSignals(ctx: MutationCtx, roomId: Id<"rooms">): Promise<void> {
+  const rows = await ctx.db
+    .query("signals")
+    .withIndex("by_roomId", (q) => q.eq("roomId", roomId))
+    .take(500);
+  for (const row of rows) await ctx.db.delete("signals", row._id);
 }
 
 /** Bump `lastActiveAt`, but rarely, so lobby subscribers are not woken for nothing. */

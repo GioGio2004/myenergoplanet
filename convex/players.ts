@@ -40,8 +40,8 @@ async function markSeen(ctx: MutationCtx, playerId: Id<"players">, now: number):
 }
 
 /**
- * Pick a slot for a newcomer: the lowest free one, or (in a full lobby) the slot of a
- * player who has been gone for longer than SLOT_RESERVE_MS.
+ * Pick a slot for a newcomer: the lowest free one, else a bot's seat, else (in a full
+ * lobby) the seat of a player who has been gone for longer than SLOT_RESERVE_MS.
  */
 async function claimSlot(
   ctx: MutationCtx,
@@ -51,9 +51,16 @@ async function claimSlot(
   const taken = new Set(players.map((p) => p.slot));
   for (let slot = 0; slot < MAX_PLAYERS; slot++) if (!taken.has(slot)) return slot;
 
+  // A real player always beats a bot to a seat.
+  const bot = players.find((p) => p.isBot);
+  if (bot) {
+    await ctx.db.delete("players", bot._id);
+    return bot.slot;
+  }
+
   let stalest: { player: Doc<"players">; lastSeenAt: number } | null = null;
   for (const player of players) {
-    if (player.connected) continue;
+    if (player.connected || player.isBot) continue;
     const presence = await presenceOf(ctx, player._id);
     const lastSeenAt = presence?.lastSeenAt ?? 0;
     if (now - lastSeenAt < SLOT_RESERVE_MS) continue;

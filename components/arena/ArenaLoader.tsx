@@ -3,6 +3,7 @@
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useCallback, useMemo } from "react";
+import { useHostTransport } from "@/lib/net/useHostTransport";
 import { useRouter } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -36,18 +37,35 @@ function RoomArena({ rawCode, onExit }: { rawCode: string; onExit: () => void })
   const [hostRoom] = useHostRoom();
   const lobby = useQuery(api.rooms.lobby, code ? { code } : "skip");
 
+  const transport = useHostTransport(hostRoom && hostRoom.code === code ? hostRoom : null);
+
   // Only re-build the roster when who is playing changes, not on every presence flip.
-  const rosterKey = lobby ? lobby.players.map((p) => `${p.slot}\u0000${p.name}`).join("\u0001") : "";
-  const roster = useMemo<PlayerSetup[]>(
-    () =>
-      rosterKey === ""
-        ? []
-        : rosterKey.split("\u0001").map((entry) => {
-            const [slot, name] = entry.split("\u0000");
-            // Phone controls arrive with the WebRTC transport; until then a bot wrestles.
-            return { slot: Number(slot) as PlayerSlot, name, control: "bot" as const };
-          }),
-    [rosterKey],
+  const rosterKey = lobby
+    ? lobby.players.map((p) => [p.slot, p.id, p.isBot ? 1 : 0, p.name].join("\u0000")).join("\u0001")
+    : "";
+  const { roster, playerBySlot } = useMemo(() => {
+    const roster: PlayerSetup[] = [];
+    const playerBySlot = new Map<number, string>();
+    if (rosterKey !== "") {
+      for (const entry of rosterKey.split("\u0001")) {
+        const [slot, id, bot, name] = entry.split("\u0000");
+        const s = Number(slot) as PlayerSlot;
+        roster.push({ slot: s, name, control: bot === "1" ? "bot" : "remote" });
+        if (bot !== "1") playerBySlot.set(s, id);
+      }
+    }
+    return { roster, playerBySlot };
+  }, [rosterKey]);
+
+  // Phones drive their own wrestler through the live connection; bots use the built-in AI.
+  const inputFactory = useCallback(
+    (setup: PlayerSetup) => {
+      const playerId = playerBySlot.get(setup.slot);
+      return setup.control === "remote" && playerId && transport
+        ? transport.inputSource(playerId)
+        : undefined;
+    },
+    [playerBySlot, transport],
   );
 
   if (!code || lobby === null) {
@@ -62,13 +80,22 @@ function RoomArena({ rawCode, onExit }: { rawCode: string; onExit: () => void })
       />
     );
   }
-  if (lobby === undefined) return <ArenaMessage title="Preparing the ring…" pulse />;
+  if (lobby === undefined || !transport) return <ArenaMessage title="Preparing the ring…" pulse />;
 
   return (
     <GameScreen
       onExit={onExit}
       roster={roster}
-      overlay={<RoomBridge room={hostRoom} status={lobby.status} onBackToLobby={onExit} />}
+      inputFactory={inputFactory}
+      overlay={
+        <RoomBridge
+          room={hostRoom}
+          status={lobby.status}
+          transport={transport}
+          playerBySlot={playerBySlot}
+          onBackToLobby={onExit}
+        />
+      }
     />
   );
 }

@@ -27,6 +27,15 @@ export const CLOSED_ROOM_TTL_MS = 60 * 60 * 1000;
 
 export const DEFAULT_ROOM_SETTINGS = { pointsToWin: 5, matchSeconds: 180 } as const;
 
+/** Names for computer players the host adds to fill seats. */
+export const BOT_NAMES = ["Bot Mochi", "Bot Tofu", "Bot Bao", "Bot Lotus", "Bot Pebble", "Bot Crane"];
+
+/** Signalling rows older than this are deleted by the cleanup cron. */
+export const SIGNAL_TTL_MS = 2 * 60 * 1000;
+
+/** The signalling peer id of the host screen (phones use their player id). */
+export const HOST_PEER = "host";
+
 export type RoomStatus = "lobby" | "playing" | "results" | "closed";
 
 /** Machine-readable error codes thrown as `ConvexError({ code, message })`. */

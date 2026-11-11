@@ -69,3 +69,21 @@ body {
     animation: none;
   }
 }
+
+/* Phone controller: score / knockout flash. */
+@keyframes flash {
+  0% {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+  12% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}

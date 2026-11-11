@@ -15,6 +15,9 @@ import { PLAYER_STYLES } from "@/game/config";
 import type { PlayerSlot } from "@/game/types";
 import { SealStamp } from "@/components/motifs/SealStamp";
 import { usePlayerSeat, type PlayerSeat } from "@/lib/sessions";
+import type { PhoneTransport } from "@/lib/net/phoneTransport";
+import { closePhoneTransport, usePhoneLink, usePhoneTransport } from "@/lib/net/usePhoneTransport";
+import { Controller } from "./Controller";
 import { roomErrorCode, roomErrorMessage } from "@/lib/roomErrors";
 import { useSuggestedName } from "@/lib/suggestedName";
 
@@ -42,6 +45,10 @@ function PlayerRoom({ code }: { code: string }) {
   const [seat, setSeat] = usePlayerSeat(code);
 
   useSeatSession(seat, setSeat);
+  const transport = usePhoneTransport(code, seat?.playerId ?? null, seat?.rejoinToken ?? null);
+  useEffect(() => {
+    if (!seat) closePhoneTransport();
+  }, [seat]);
 
   if (room === undefined) return <Loading label="Finding the room…" />;
   if (room === null) {
@@ -56,7 +63,21 @@ function PlayerRoom({ code }: { code: string }) {
   }
 
   const me = seat ? room.players.find((p) => p.id === seat.playerId) : undefined;
-  if (seat && me) return <SeatView room={room} me={me} seat={seat} onLeave={() => setSeat(null)} />;
+  if (seat && me && transport && room.status === "playing") {
+    return (
+      <Controller
+        transport={transport}
+        style={PLAYER_STYLES[me.slot as PlayerSlot]}
+        name={me.name}
+        pointsToWin={room.settings.pointsToWin}
+      />
+    );
+  }
+  if (seat && me) {
+    return (
+      <SeatView room={room} me={me} seat={seat} transport={transport} onLeave={() => setSeat(null)} />
+    );
+  }
   if (seat) return <Loading label="Reconnecting…" />;
   return <JoinForm room={room} onSeated={setSeat} />;
 }
@@ -167,14 +188,17 @@ function SeatView({
   room,
   me,
   seat,
+  transport,
   onLeave,
 }: {
   room: Room;
   me: Room["players"][number];
   seat: PlayerSeat;
+  transport: PhoneTransport | null;
   onLeave: () => void;
 }) {
   const style = PLAYER_STYLES[me.slot as PlayerSlot];
+  const link = usePhoneLink(transport);
   const setStatus = useMutation(api.rooms.setStatus);
   const leave = useMutation(api.players.leave);
   const [busy, setBusy] = useState(false);
@@ -210,14 +234,7 @@ function SeatView({
       <p className="text-lg">Waiting for the host to start…</p>
     );
   } else if (room.status === "playing") {
-    status = (
-      <div className="flex flex-col gap-2">
-        <p className="font-serif text-2xl">Match on! Watch the big screen.</p>
-        <p className="text-sm opacity-75">
-          Phone controls arrive in the next update. A bot wrestles for you this round.
-        </p>
-      </div>
-    );
+    status = <p className="font-serif text-2xl">Match on! Connecting your controller…</p>;
   } else {
     status = me.isLeader ? (
       <LeaderButton onClick={startMatch} disabled={busy} ink={style.ink}>
@@ -253,6 +270,17 @@ function SeatView({
           {status}
           {error && <p className="mt-3 text-sm font-medium">{error}</p>}
         </div>
+        <p className="flex items-center gap-2 text-xs tracking-wide opacity-75">
+          <span
+            aria-hidden
+            className={`size-2 rounded-full ${link === "open" ? "bg-current" : "animate-pulse border border-current"}`}
+          />
+          {link === "open"
+            ? "Controller linked to the big screen"
+            : link === "reconnecting"
+              ? "Reconnecting to the big screen…"
+              : "Linking to the big screen…"}
+        </p>
       </div>
 
       <button

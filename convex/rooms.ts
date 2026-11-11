@@ -3,6 +3,8 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
 import {
+  assignLeader,
+  deleteRoomSignals,
   fail,
   findRoomByCode,
   playersInRoom,
@@ -15,10 +17,13 @@ import {
   touchRoom,
 } from "./model";
 import {
+  BOT_NAMES,
   CLOSED_ROOM_TTL_MS,
   DEFAULT_ROOM_SETTINGS,
+  MAX_PLAYERS,
   MIN_PLAYERS,
   ROOM_IDLE_CLOSE_MS,
+  SIGNAL_TTL_MS,
 } from "./shared";
 
 const publicPlayer = v.object({
@@ -27,6 +32,7 @@ const publicPlayer = v.object({
   slot: v.number(),
   connected: v.boolean(),
   isLeader: v.boolean(),
+  isBot: v.boolean(),
 });
 
 const lobbyView = v.object({
@@ -84,6 +90,7 @@ export const lobby = query({
           slot: p.slot,
           connected: p.connected,
           isLeader: p.isLeader,
+          isBot: p.isBot === true,
         })),
     };
   },
@@ -144,6 +151,54 @@ export const setStatus = mutation({
   },
 });
 
+/** Host screen: fill the lowest empty seat with a computer player (lobby only). */
+export const addBot = mutation({
+  args: { code: v.string(), hostSecret: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const room = await requireHostRoom(ctx, args.code, args.hostSecret);
+    if (room.status !== "lobby") fail("GAME_RUNNING", "Bots can only be added in the lobby.");
+    const players = await playersInRoom(ctx, room._id);
+    const taken = new Set(players.map((p) => p.slot));
+    let slot = -1;
+    for (let s = 0; s < MAX_PLAYERS; s++) {
+      if (!taken.has(s)) {
+        slot = s;
+        break;
+      }
+    }
+    if (slot < 0) fail("ROOM_FULL", `This room already has ${MAX_PLAYERS} players.`);
+    const usedNames = new Set(players.map((p) => p.name));
+    const name = BOT_NAMES.find((n) => !usedNames.has(n)) ?? `Bot ${slot + 1}`;
+    await ctx.db.insert("players", {
+      roomId: room._id,
+      name,
+      slot,
+      rejoinToken: randomToken(),
+      connected: true,
+      isLeader: false,
+      isBot: true,
+    });
+    await touchRoom(ctx, room, Date.now());
+    return null;
+  },
+});
+
+/** Host screen: remove a computer player (lobby only). */
+export const removeBot = mutation({
+  args: { code: v.string(), hostSecret: v.string(), playerId: v.id("players") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const room = await requireHostRoom(ctx, args.code, args.hostSecret);
+    if (room.status !== "lobby") fail("GAME_RUNNING", "Bots can only be removed in the lobby.");
+    const bot = await ctx.db.get("players", args.playerId);
+    if (!bot || bot.roomId !== room._id || !bot.isBot) return null;
+    await ctx.db.delete("players", bot._id);
+    await assignLeader(ctx, room._id);
+    return null;
+  },
+});
+
 /** Host screen: close the room. Phones see it as closed; the cron deletes it later. */
 export const close = mutation({
   args: { code: v.string(), hostSecret: v.string() },
@@ -164,6 +219,7 @@ async function closeRoom(ctx: MutationCtx, roomId: Id<"rooms">): Promise<void> {
     if (presence) await ctx.db.delete("presence", presence._id);
     await ctx.db.delete("players", player._id);
   }
+  await deleteRoomSignals(ctx, roomId);
   await ctx.db.patch("rooms", roomId, { status: "closed", lastActiveAt: Date.now() });
 }
 
@@ -196,6 +252,14 @@ export const cleanup = internalMutation({
       .take(CLEANUP_BATCH);
     for (const room of expired) await ctx.db.delete("rooms", room._id);
     if (expired.length === CLEANUP_BATCH) more = true;
+
+    // Signalling rows nobody picked up.
+    const stale = await ctx.db
+      .query("signals")
+      .withIndex("by_creation_time", (q) => q.lt("_creationTime", now - SIGNAL_TTL_MS))
+      .take(CLEANUP_BATCH * 4);
+    for (const row of stale) await ctx.db.delete("signals", row._id);
+    if (stale.length === CLEANUP_BATCH * 4) more = true;
 
     if (more) await ctx.scheduler.runAfter(0, internal.rooms.cleanup, {});
     return null;

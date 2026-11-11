@@ -13,6 +13,7 @@ import type * as model from "../model.js";
 import type * as players from "../players.js";
 import type * as rooms from "../rooms.js";
 import type * as shared from "../shared.js";
+import type * as signals from "../signals.js";
 
 import type {
   ApiFromModules,
@@ -26,6 +27,7 @@ declare const fullApi: ApiFromModules<{
   players: typeof players;
   rooms: typeof rooms;
   shared: typeof shared;
+  signals: typeof signals;
 }>;
 
 /**

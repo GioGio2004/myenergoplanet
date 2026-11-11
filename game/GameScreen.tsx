@@ -8,7 +8,7 @@ import { useSettings } from "@/lib/settings";
 import { PLAYER_STYLES, gameConfig } from "./config";
 import { GameProvider, makeGameSettings, useGame, type GameContextValue } from "./hooks";
 import { GameRuntime } from "./runtime";
-import type { PlayerSetup } from "./types";
+import type { InputSource, PlayerSetup } from "./types";
 import { createMatch } from "./sim/match";
 import { createInputSource } from "./input";
 import { PhysicsWorld } from "./physics/PhysicsWorld";
@@ -43,9 +43,19 @@ export type GameScreenProps = {
   roster?: PlayerSetup[] | null;
   /** Extra UI rendered inside the game context, on top of the HUD. */
   overlay?: ReactNode;
+  /**
+   * Builds the input source for a player. Return undefined to use the default for the
+   * player's `control` (keyboard / bot). Must be a stable function (useCallback).
+   */
+  inputFactory?: (setup: PlayerSetup) => InputSource | null | undefined;
 };
 
-export default function GameScreen({ onExit, roster = null, overlay }: GameScreenProps) {
+export default function GameScreen({
+  onExit,
+  roster = null,
+  overlay,
+  inputFactory,
+}: GameScreenProps) {
   const [game] = useState(() => {
     const runtime = new GameRuntime();
     return { runtime, match: createMatch(runtime) };
@@ -74,9 +84,10 @@ export default function GameScreen({ onExit, roster = null, overlay }: GameScree
     runtime.setPlayers(setups);
     for (let slot = 0; slot < runtime.inputs.length; slot++) {
       const setup = setups.find((s) => s.slot === slot);
-      runtime.setInput(slot, setup ? createInputSource(setup.control) : null);
+      const source = setup ? (inputFactory?.(setup) ?? createInputSource(setup.control)) : null;
+      runtime.setInput(slot, source);
     }
-  }, [runtime, setups]);
+  }, [runtime, setups, inputFactory]);
 
   // Input sources hold window listeners: drop them when the screen goes away.
   useEffect(() => () => runtime.clearInputs(), [runtime]);

@@ -13,6 +13,8 @@ import { CloudScroll } from "@/components/motifs/CloudScroll";
 import { preloadArena } from "@/components/arena/ArenaLoader";
 import { useHostTouch } from "@/components/arena/useHostTouch";
 import { useHostRoom } from "@/lib/sessions";
+import { HostTransport } from "@/lib/net/hostTransport";
+import { useHostTransport, useLinkStatuses } from "@/lib/net/useHostTransport";
 import { roomErrorMessage } from "@/lib/roomErrors";
 import { useSettings } from "@/lib/settings";
 
@@ -27,6 +29,8 @@ export function HostHome() {
   const createRoom = useMutation(api.rooms.create);
   const closeRoom = useMutation(api.rooms.close);
   const setStatus = useMutation(api.rooms.setStatus);
+  const addBot = useMutation(api.rooms.addBot);
+  const removeBot = useMutation(api.rooms.removeBot);
 
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -40,6 +44,15 @@ export function HostHome() {
   }, [roomGone, setHostRoom]);
 
   useHostTouch(roomGone ? null : hostRoom);
+
+  // Live controller links to the phones (answering their WebRTC offers starts here).
+  const transport = useHostTransport(roomGone ? null : hostRoom);
+  const links = useLinkStatuses(transport);
+  const humanIds = (lobby?.players ?? []).filter((p) => !p.isBot).map((p) => p.id).join(",");
+  const lobbyLoaded = lobby != null;
+  useEffect(() => {
+    if (transport && lobbyLoaded) transport.prune(humanIds ? humanIds.split(",") : []);
+  }, [transport, lobbyLoaded, humanIds]);
 
   // Warm the 3D bundle while players join.
   const roomOpen = hostRoom !== null && !roomGone;
@@ -75,8 +88,22 @@ export function HostHome() {
   function handleClose() {
     if (!hostRoom) return;
     void closeRoom(hostRoom).catch(() => {});
+    HostTransport.closeCurrent();
     setHostRoom(null);
     setStartError(null);
+  }
+
+  function handleAddBot() {
+    if (!hostRoom) return;
+    setStartError(null);
+    void addBot(hostRoom).catch((error) => setStartError(roomErrorMessage(error)));
+  }
+
+  function handleRemoveBot(playerId: string) {
+    if (!hostRoom) return;
+    const bot = lobby?.players.find((p) => p.id === playerId);
+    if (!bot) return;
+    void removeBot({ ...hostRoom, playerId: bot.id }).catch(() => {});
   }
 
   async function handleStart() {
@@ -123,7 +150,10 @@ export function HostHome() {
                     <HostLobby
                       key="lobby"
                       players={lobby?.players ?? []}
+                      links={links}
                       onStart={handleStart}
+                      onAddBot={handleAddBot}
+                      onRemoveBot={handleRemoveBot}
                       starting={starting}
                       error={startError}
                     />

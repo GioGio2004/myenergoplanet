@@ -34,7 +34,24 @@ export default defineSchema({
     connected: v.boolean(),
     /** The first player to join; can start the match from their phone. */
     isLeader: v.boolean(),
+    /** A computer player added by the host to fill a seat. Never a leader, never times out. */
+    isBot: v.optional(v.boolean()),
   }).index("by_roomId_and_slot", ["roomId", "slot"]),
+
+  /**
+   * WebRTC signalling between the host screen and each phone: offers, answers and ICE
+   * candidates. Rows are deleted once read; the cleanup cron removes stragglers.
+   * A peer is "host" or a player id.
+   */
+  signals: defineTable({
+    roomId: v.id("rooms"),
+    fromPeer: v.string(),
+    toPeer: v.string(),
+    kind: v.union(v.literal("offer"), v.literal("answer"), v.literal("ice")),
+    payload: v.string(),
+  })
+    .index("by_roomId_and_toPeer", ["roomId", "toPeer"])
+    .index("by_roomId", ["roomId"]),
 
   /**
    * Heartbeats live apart from `players` so the frequent writes do not re-run the
